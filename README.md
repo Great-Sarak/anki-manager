@@ -45,6 +45,52 @@ anki-manager find-by-guid "anki-manager::<hash>"   # → note_id or null
 anki-manager sync
 ```
 
+### Batch add-notes
+
+For bulk import, use `add-notes` with a JSONL or queue-style-markdown input:
+
+```sh
+# JSONL: one note per line, fields as a JSON object
+anki-manager add-notes --from-file notes.jsonl
+
+# Markdown: anki-translator's queue file format (## Card N — <shape> blocks)
+anki-manager add-notes --from-markdown queue.md
+
+# Or stream JSONL on stdin
+cat notes.jsonl | anki-manager add-notes --from-stdin
+
+# Strict-add mode: fails if any stable_guid collides (default is idempotent upsert)
+anki-manager add-notes --from-file notes.jsonl --add-only
+
+# Validate without writing
+anki-manager add-notes --from-file notes.jsonl --dry-run
+```
+
+JSONL line schema:
+
+```json
+{"deck": "Reading", "model": "AT Basic",
+ "fields": {"Front": "Q", "Back": "A", "Source": "...", "Position": "..."},
+ "tags": ["biology"], "stable_guid": null}
+```
+
+Behavior:
+
+- **All-or-nothing validation**: every entry is dry-run through the same code paths as one-at-a-time writes (allowlist, schema, GUID derivation). If any entry fails validation, zero entries are written. Errors are reported per-index.
+- Default mode is **upsert** (idempotent — re-running on the same file is safe).
+- `--add-only` strictly adds; any stable-GUID collision fails the entry.
+- `--dry-run` runs both phases (validate + would-write) without modifying the collection.
+
+Output JSON:
+
+```json
+{"created": 5, "updated": 2, "skipped": 0,
+ "failed": [{"index": 3, "error": "DeckNotAllowedError: ..."}],
+ "dry_run": false}
+```
+
+Exit code is `0` on full success, `1` if any entry failed.
+
 ## Permissions (deck allowlist)
 
 Writes are gated by a system-wide TOML allowlist at

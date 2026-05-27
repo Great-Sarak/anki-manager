@@ -80,6 +80,23 @@ def main(argv: list[str] | None = None) -> int:
     p_find = sub.add_parser("find-by-guid", help="Print the note_id for a stable GUID, or 'null'")
     p_find.add_argument("stable_guid")
 
+    p_batch = sub.add_parser(
+        "add-notes",
+        help="Bulk add/upsert notes from a JSONL file, queue-style markdown, or stdin",
+    )
+    grp = p_batch.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--from-file", help="Path to a .jsonl file (one note per line)")
+    grp.add_argument("--from-markdown", help="Path to anki-translator's queue-style markdown")
+    grp.add_argument("--from-stdin", action="store_true", help="Read JSONL from stdin")
+    p_batch.add_argument(
+        "--add-only", action="store_true",
+        help="Fail on stable-GUID collision instead of upserting (default: upsert)",
+    )
+    p_batch.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate every entry without writing; report what would happen",
+    )
+
     p_perm = sub.add_parser("permissions", help="Inspect or mutate the allowlist")
     perm_sub = p_perm.add_subparsers(dest="perm_cmd", required=True)
 
@@ -185,9 +202,30 @@ def _dispatch(mgr: AnkiManager, args: argparse.Namespace) -> int:
         case "find-by-guid":
             note_id = mgr.find_by_guid(args.stable_guid)
             print(json.dumps(note_id))
+        case "add-notes":
+            return _dispatch_batch(mgr, args)
         case "permissions":
             return _dispatch_permissions(mgr, args)
     return 0
+
+
+def _dispatch_batch(mgr: AnkiManager, args: argparse.Namespace) -> int:
+    from . import batch
+
+    try:
+        entries = batch.load_entries(
+            from_file=args.from_file,
+            from_markdown=args.from_markdown,
+            from_stdin=args.from_stdin,
+        )
+    except batch.BatchParseError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    mode = "add-only" if args.add_only else "upsert"
+    result = batch.add_notes(mgr, entries, mode=mode, dry_run=args.dry_run)
+    print(json.dumps(result.to_dict(), indent=2))
+    return 0 if not result.failed else 1
 
 
 def _resolve_section(mgr: AnkiManager, args: argparse.Namespace) -> str:
