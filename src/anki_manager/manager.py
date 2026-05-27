@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from .errors import (
 )
 from .guid import compute_guid, derive_front, derive_source
 from .lifecycle import Lifecycle, Status
+from .lock import file_lock
 
 
 DRY_RUN_NOTE_ID = 0  # sentinel; real Anki note IDs are positive ints
@@ -101,6 +103,27 @@ class AnkiManager:
     def effective_allowlist(self) -> tuple[str, ...]:
         """Inspect the patterns this AnkiManager will let through."""
         return self._get_allowlist().effective_patterns(self._get_agent())
+
+    # ------------------------------------------------------------------ #
+    # Write lock                                                          #
+    # ------------------------------------------------------------------ #
+
+    @contextmanager
+    def _writer_lock(self):
+        """Hold the cross-process writer lock for the GUID-check + RPC-write window.
+
+        Closes the TOCTOU race where two agents both run find_by_guid,
+        both see "no existing note", both call addNote with the same
+        stable GUID → two notes with the same id.
+
+        Disabled (no-op) when config.lock_path is None — used by unit tests.
+        """
+        lock_path = self._config.lock_path
+        if lock_path is None:
+            yield
+            return
+        with file_lock(lock_path, timeout=self._config.lock_timeout):
+            yield
 
     # ------------------------------------------------------------------ #
     # Lifecycle pass-throughs                                             #
@@ -201,19 +224,24 @@ class AnkiManager:
                 front=derive_front(fields, available),
             )
 
-        existing = self.find_by_guid(stable_guid)
-        if existing is not None:
-            raise NoteExistsError(
-                f"Note with stable_guid {stable_guid!r} already exists (note_id={existing})"
-            )
+        # Hold the writer lock across the lookup + write to close the
+        # TOCTOU race with concurrent agents adding the same GUID.
+        # For dry_run we don't need the lock — no write happens — but
+        # we still take it so the lookup result is consistent.
+        with self._writer_lock():
+            existing = self.find_by_guid(stable_guid)
+            if existing is not None:
+                raise NoteExistsError(
+                    f"Note with stable_guid {stable_guid!r} already exists (note_id={existing})"
+                )
 
-        if dry_run:
-            return AddResult(
-                note_id=DRY_RUN_NOTE_ID, stable_guid=stable_guid, dry_run=True,
-            )
+            if dry_run:
+                return AddResult(
+                    note_id=DRY_RUN_NOTE_ID, stable_guid=stable_guid, dry_run=True,
+                )
 
-        all_tags = list(tags or []) + [stable_guid]
-        note_id = self._rpc.add_note(deck=deck, model=model, fields=fields, tags=all_tags)
+            all_tags = list(tags or []) + [stable_guid]
+            note_id = self._rpc.add_note(deck=deck, model=model, fields=fields, tags=all_tags)
         return AddResult(note_id=note_id, stable_guid=stable_guid)
 
     def find_by_guid(self, stable_guid: str) -> int | None:
@@ -246,11 +274,12 @@ class AnkiManager:
         NoteNotFoundError if absent) but no field update happens.  The
         returned int is still the would-update note_id.
         """
-        note_id = self.find_by_guid(stable_guid)
-        if note_id is None:
-            raise NoteNotFoundError(f"No note found with stable_guid {stable_guid!r}")
-        if not dry_run:
-            self._rpc.update_note_fields(note_id, fields)
+        with self._writer_lock():
+            note_id = self.find_by_guid(stable_guid)
+            if note_id is None:
+                raise NoteNotFoundError(f"No note found with stable_guid {stable_guid!r}")
+            if not dry_run:
+                self._rpc.update_note_fields(note_id, fields)
         return note_id
 
     def upsert_note(
@@ -292,23 +321,24 @@ class AnkiManager:
                 front=derive_front(fields, available),
             )
 
-        existing = self.find_by_guid(stable_guid)
-        if existing is not None:
-            if not dry_run:
-                self._rpc.update_note_fields(existing, fields)
-            return UpsertResult(
-                note_id=existing, stable_guid=stable_guid,
-                created=False, dry_run=dry_run,
-            )
+        with self._writer_lock():
+            existing = self.find_by_guid(stable_guid)
+            if existing is not None:
+                if not dry_run:
+                    self._rpc.update_note_fields(existing, fields)
+                return UpsertResult(
+                    note_id=existing, stable_guid=stable_guid,
+                    created=False, dry_run=dry_run,
+                )
 
-        if dry_run:
-            return UpsertResult(
-                note_id=DRY_RUN_NOTE_ID, stable_guid=stable_guid,
-                created=True, dry_run=True,
-            )
+            if dry_run:
+                return UpsertResult(
+                    note_id=DRY_RUN_NOTE_ID, stable_guid=stable_guid,
+                    created=True, dry_run=True,
+                )
 
-        all_tags = list(tags or []) + [stable_guid]
-        note_id = self._rpc.add_note(deck=deck, model=model, fields=fields, tags=all_tags)
+            all_tags = list(tags or []) + [stable_guid]
+            note_id = self._rpc.add_note(deck=deck, model=model, fields=fields, tags=all_tags)
         return UpsertResult(note_id=note_id, stable_guid=stable_guid, created=True)
 
     def sync(self) -> None:

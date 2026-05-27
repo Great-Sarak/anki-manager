@@ -151,6 +151,17 @@ def test_allowlist_show(mgr: AnkiManager):
     assert any("Myrzka" in p for p in patterns), f"got: {patterns}"
 
 
+def test_writer_lock_present_and_usable(mgr: AnkiManager):
+    """The host's writer.lock should exist and be lockable by the agent."""
+    from pathlib import Path
+    from anki_manager import file_lock
+
+    lock_path = Path("/var/lib/kryshanti-anki/writer.lock")
+    assert lock_path.exists(), "writer.lock not installed by host-setup.sh"
+    with file_lock(lock_path, timeout=2.0):
+        pass
+
+
 def test_dry_run_add_note_does_not_mutate(mgr: AnkiManager):
     """A dry-run add_note shouldn't create a note in Anki."""
     mgr.add_deck(DECK)

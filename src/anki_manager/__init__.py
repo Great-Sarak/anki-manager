@@ -17,6 +17,7 @@ from .errors import (
 )
 from .guid import GUID_NAMESPACE, GUID_TAG_PREFIX, compute_guid
 from .lifecycle import Lifecycle, Status
+from .lock import LockTimeoutError, file_lock
 from .manager import DRY_RUN_NOTE_ID, AddResult, AnkiManager, UpsertResult
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "InvalidNoteError",
     "Lifecycle",
     "LifecycleError",
+    "LockTimeoutError",
     "NEW_SENTINEL",
     "NoteExistsError",
     "NoteNotFoundError",
@@ -42,4 +44,5 @@ __all__ = [
     "Status",
     "UpsertResult",
     "compute_guid",
+    "file_lock",
 ]

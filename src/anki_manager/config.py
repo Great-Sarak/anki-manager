@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -14,3 +15,6 @@ class Config:
     # starts responding to non-version actions; 60s is a comfortable upper bound.
     ready_timeout: float = 60.0
     rpc_timeout: float = 60.0
+    # Cross-process write lock — set lock_path=None to disable (tests).
+    lock_path: Path | None = Path("/var/lib/kryshanti-anki/writer.lock")
+    lock_timeout: float = 30.0

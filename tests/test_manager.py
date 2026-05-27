@@ -8,6 +8,7 @@ from anki_manager import (
     AgentEntry,
     Allowlist,
     AnkiManager,
+    Config,
     DeckNotAllowedError,
     InvalidNoteError,
     NoteExistsError,
@@ -23,10 +24,14 @@ _DEFAULT_AGENT = AgentEntry(
     has_new=False,
 )
 _DEFAULT_ALLOWLIST = Allowlist(universal=(), agents={"Test": _DEFAULT_AGENT})
+# lock_path=None disables the cross-process flock for unit tests; we
+# exercise the lock itself in tests/test_lock.py.
+_NO_LOCK_CONFIG = Config(lock_path=None)
 
 
-def _mgr(client, lifecycle=None, *, allowlist=_DEFAULT_ALLOWLIST, agent=_DEFAULT_AGENT):
+def _mgr(client, lifecycle=None, *, allowlist=_DEFAULT_ALLOWLIST, agent=_DEFAULT_AGENT, config=None):
     return AnkiManager(
+        config=config or _NO_LOCK_CONFIG,
         client=client,
         lifecycle=lifecycle or MagicMock(),
         allowlist=allowlist,
@@ -394,6 +399,7 @@ class TestAllowlistEnforcement:
         monkeypatch.setattr(Allowlist, "load", classmethod(lambda cls, path=None: allowlist_after))
 
         mgr = AnkiManager(
+            config=_NO_LOCK_CONFIG,
             client=client, lifecycle=MagicMock(),
             allowlist=allowlist_before, agent=agent_with_new,
         )

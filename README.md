@@ -143,6 +143,22 @@ pytest tests/test_lifecycle.py tests/test_manager.py    # unit (27 tests, no hos
 ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requires live unit
 ```
 
+## Concurrency (writer lock)
+
+All write paths (`add_note`, `update_note`, `upsert_note`) hold a
+cross-process `flock` on `/var/lib/kryshanti-anki/writer.lock` while
+running their GUID-collision lookup + RPC write. This closes the
+TOCTOU race where two concurrent agents could both run `find_by_guid`,
+both see "no existing note", and both call `addNote` with the same
+stable GUID — producing two notes with identical identifiers.
+
+The lock is held only across the lookup + write window, **not** across
+`sync()` (which can take minutes and isn't write-critical).
+
+`config.lock_timeout` defaults to 30s; `LockTimeoutError` is raised if
+the lock can't be acquired in that window. Pass `Config(lock_path=None)`
+to disable locking entirely (single-process tests only).
+
 ## Dry-run
 
 All three write paths support a `dry_run=True` kwarg (`--dry-run` on the CLI). When set, the full validation pipeline runs — allowlist check, schema check, GUID-collision lookup — but no RPC write is sent.
@@ -158,9 +174,9 @@ For `add-note`, `note_id` is `0` (sentinel — real Anki note IDs are positive).
 
 ## Deferred to a follow-up
 
-This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist + dry-run. The original plan also calls for:
+This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist + dry-run + writer lock. The original plan also calls for:
 
-- Single-writer lock (preventing two concurrent agents from writing to the same collection)
 - Backup-on-write with 3-day rolling retention
 
-These will land in subsequent commits.
+This will land in a subsequent commit (alongside a `createBackup` patch
+to AnkiConnect on a separate branch).
