@@ -49,12 +49,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Stable GUID tag (anki-manager::...). Derived from source+front fields if omitted.",
     )
+    p_note.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate (schema, allowlist, GUID collision) without writing.",
+    )
 
     p_update = sub.add_parser("update-note", help="Update a note's fields by stable GUID")
     p_update.add_argument("--stable-guid", required=True)
     p_update.add_argument(
         "--field", action="append", required=True, type=_parse_field,
         help="Field as NAME=VALUE; only listed fields are updated.",
+    )
+    p_update.add_argument(
+        "--dry-run", action="store_true",
+        help="Look up the note without applying the update.",
     )
 
     p_upsert = sub.add_parser("upsert-note", help="Add the note if missing, update fields if present")
@@ -63,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
     p_upsert.add_argument("--field", action="append", required=True, type=_parse_field)
     p_upsert.add_argument("--tag", action="append", default=[])
     p_upsert.add_argument("--stable-guid", default=None)
+    p_upsert.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate without writing; 'created' reflects what would have happened.",
+    )
 
     p_find = sub.add_parser("find-by-guid", help="Print the note_id for a stable GUID, or 'null'")
     p_find.add_argument("stable_guid")
@@ -141,14 +153,16 @@ def _dispatch(mgr: AnkiManager, args: argparse.Namespace) -> int:
                 fields=dict(args.field),
                 tags=args.tag or None,
                 stable_guid=args.stable_guid,
+                dry_run=args.dry_run,
             )
             print(json.dumps({
                 "note_id": result.note_id,
                 "stable_guid": result.stable_guid,
+                "dry_run": result.dry_run,
             }))
         case "update-note":
-            note_id = mgr.update_note(args.stable_guid, dict(args.field))
-            print(note_id)
+            note_id = mgr.update_note(args.stable_guid, dict(args.field), dry_run=args.dry_run)
+            print(json.dumps({"note_id": note_id, "dry_run": args.dry_run}))
         case "upsert-note":
             result = mgr.upsert_note(
                 deck=args.deck,
@@ -156,11 +170,13 @@ def _dispatch(mgr: AnkiManager, args: argparse.Namespace) -> int:
                 fields=dict(args.field),
                 tags=args.tag or None,
                 stable_guid=args.stable_guid,
+                dry_run=args.dry_run,
             )
             print(json.dumps({
                 "note_id": result.note_id,
                 "stable_guid": result.stable_guid,
                 "created": result.created,
+                "dry_run": result.dry_run,
             }))
         case "find-by-guid":
             note_id = mgr.find_by_guid(args.stable_guid)

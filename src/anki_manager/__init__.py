@@ -17,7 +17,7 @@ from .errors import (
 )
 from .guid import GUID_NAMESPACE, GUID_TAG_PREFIX, compute_guid
 from .lifecycle import Lifecycle, Status
-from .manager import AddResult, AnkiManager, UpsertResult
+from .manager import DRY_RUN_NOTE_ID, AddResult, AnkiManager, UpsertResult
 
 __all__ = [
     "AddResult",
@@ -27,6 +27,7 @@ __all__ = [
     "Allowlist",
     "AllowlistError",
     "Config",
+    "DRY_RUN_NOTE_ID",
     "DeckNotAllowedError",
     "GUID_NAMESPACE",
     "GUID_TAG_PREFIX",

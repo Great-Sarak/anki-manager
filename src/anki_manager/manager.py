@@ -20,17 +20,23 @@ from .guid import compute_guid, derive_front, derive_source
 from .lifecycle import Lifecycle, Status
 
 
+DRY_RUN_NOTE_ID = 0  # sentinel; real Anki note IDs are positive ints
+
+
 @dataclass(frozen=True)
 class AddResult:
-    note_id: int
+    note_id: int           # DRY_RUN_NOTE_ID (0) if dry_run was True
     stable_guid: str
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
 class UpsertResult:
-    note_id: int
+    note_id: int           # existing id when created=False, new id when created=True,
+                           # DRY_RUN_NOTE_ID when dry_run was True and would-create
     stable_guid: str
-    created: bool  # True if a new note was added, False if an existing one was updated
+    created: bool          # True if a new note was added, False if an existing one was updated
+    dry_run: bool = False
 
 
 class AnkiManager:
@@ -163,6 +169,7 @@ class AnkiManager:
         *,
         tags: list[str] | None = None,
         stable_guid: str | None = None,
+        dry_run: bool = False,
     ) -> AddResult:
         """Add a note with live schema validation + stable GUID tagging.
 
@@ -176,6 +183,10 @@ class AnkiManager:
         If `stable_guid` is omitted, it is derived from the `source` and
         `front`/`text` fields using `guid.derive_*`.  Pass an explicit
         `stable_guid` when those heuristics don't apply.
+
+        When `dry_run=True`, every check above still runs (so callers can
+        validate a batch before writing) but no RPC write happens.  The
+        returned AddResult has `dry_run=True` and `note_id=DRY_RUN_NOTE_ID`.
         """
         self._require_allowed(deck)
 
@@ -196,6 +207,11 @@ class AnkiManager:
                 f"Note with stable_guid {stable_guid!r} already exists (note_id={existing})"
             )
 
+        if dry_run:
+            return AddResult(
+                note_id=DRY_RUN_NOTE_ID, stable_guid=stable_guid, dry_run=True,
+            )
+
         all_tags = list(tags or []) + [stable_guid]
         note_id = self._rpc.add_note(deck=deck, model=model, fields=fields, tags=all_tags)
         return AddResult(note_id=note_id, stable_guid=stable_guid)
@@ -214,16 +230,27 @@ class AnkiManager:
             )
         return matches[0]
 
-    def update_note(self, stable_guid: str, fields: dict[str, str]) -> int:
+    def update_note(
+        self,
+        stable_guid: str,
+        fields: dict[str, str],
+        *,
+        dry_run: bool = False,
+    ) -> int:
         """Update fields on the note identified by `stable_guid`.
 
         Only fields are updated; the note's deck, model, and other tags
         are unchanged.  Raises NoteNotFoundError if no note has this GUID.
+
+        When `dry_run=True`, the GUID lookup still runs (and still raises
+        NoteNotFoundError if absent) but no field update happens.  The
+        returned int is still the would-update note_id.
         """
         note_id = self.find_by_guid(stable_guid)
         if note_id is None:
             raise NoteNotFoundError(f"No note found with stable_guid {stable_guid!r}")
-        self._rpc.update_note_fields(note_id, fields)
+        if not dry_run:
+            self._rpc.update_note_fields(note_id, fields)
         return note_id
 
     def upsert_note(
@@ -234,6 +261,7 @@ class AnkiManager:
         *,
         tags: list[str] | None = None,
         stable_guid: str | None = None,
+        dry_run: bool = False,
     ) -> UpsertResult:
         """Add the note if missing, update its fields if present.
 
@@ -245,6 +273,11 @@ class AnkiManager:
         Enforces the allowlist on the requested `deck` regardless of
         whether the existing note already lives there — keeps the
         permission check consistent with add_note.
+
+        When `dry_run=True`, validation + lookup run, but neither
+        `addNote` nor `updateNoteFields` are called.  `created` reflects
+        what WOULD have happened.  `note_id` is the existing id for
+        update path, or DRY_RUN_NOTE_ID for create path.
         """
         self._require_allowed(deck)
 
@@ -261,8 +294,18 @@ class AnkiManager:
 
         existing = self.find_by_guid(stable_guid)
         if existing is not None:
-            self._rpc.update_note_fields(existing, fields)
-            return UpsertResult(note_id=existing, stable_guid=stable_guid, created=False)
+            if not dry_run:
+                self._rpc.update_note_fields(existing, fields)
+            return UpsertResult(
+                note_id=existing, stable_guid=stable_guid,
+                created=False, dry_run=dry_run,
+            )
+
+        if dry_run:
+            return UpsertResult(
+                note_id=DRY_RUN_NOTE_ID, stable_guid=stable_guid,
+                created=True, dry_run=True,
+            )
 
         all_tags = list(tags or []) + [stable_guid]
         note_id = self._rpc.add_note(deck=deck, model=model, fields=fields, tags=all_tags)

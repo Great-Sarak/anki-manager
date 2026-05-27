@@ -149,3 +149,18 @@ def test_allowlist_show(mgr: AnkiManager):
     # The starter ships with Myrzka section claiming the invoking user,
     # so we expect Myrzka::* in the effective set.
     assert any("Myrzka" in p for p in patterns), f"got: {patterns}"
+
+
+def test_dry_run_add_note_does_not_mutate(mgr: AnkiManager):
+    """A dry-run add_note shouldn't create a note in Anki."""
+    mgr.add_deck(DECK)
+    fields = {f: "" for f in mgr.list_models()[MODEL_BASIC]}
+    fields["Front"] = "dry-run-q"
+    fields["Back"] = "dry-run-a"
+    fields["Source"] = "phase3b-dry-run"
+
+    result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, dry_run=True)
+    assert result.dry_run is True
+    assert result.note_id == 0
+    # Should NOT be findable in the collection
+    assert mgr.find_by_guid(result.stable_guid) is None

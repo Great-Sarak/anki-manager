@@ -236,6 +236,94 @@ class TestLifecyclePassthroughs:
         lc.wait_ready.assert_called_once()
 
 
+class TestDryRun:
+    def test_add_note_dry_run_skips_rpc(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        result = _mgr(client).add_note(
+            "D", "Basic",
+            fields={"Front": "q", "Back": "a"},
+            dry_run=True,
+        )
+        assert result.dry_run is True
+        assert result.note_id == 0
+        assert result.stable_guid.startswith("anki-manager::")
+        client.add_note.assert_not_called()
+
+    def test_add_note_dry_run_still_validates_schema(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        with pytest.raises(InvalidNoteError):
+            _mgr(client).add_note(
+                "D", "Basic",
+                fields={"Front": "q"},  # missing Back
+                dry_run=True,
+            )
+
+    def test_add_note_dry_run_still_blocks_disallowed_deck(self):
+        client = MagicMock()
+        with pytest.raises(DeckNotAllowedError):
+            _mgr(client).add_note(
+                "OffLimits", "Basic",
+                fields={"Front": "q", "Back": "a"},
+                dry_run=True,
+            )
+
+    def test_add_note_dry_run_still_raises_on_collision(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = [777]
+        with pytest.raises(NoteExistsError):
+            _mgr(client).add_note(
+                "D", "Basic",
+                fields={"Front": "q", "Back": "a"},
+                dry_run=True,
+            )
+
+    def test_update_note_dry_run_does_lookup_no_write(self):
+        client = MagicMock()
+        client.find_notes.return_value = [555]
+        note_id = _mgr(client).update_note(
+            "anki-manager::abc", {"Front": "new"}, dry_run=True,
+        )
+        assert note_id == 555
+        client.update_note_fields.assert_not_called()
+
+    def test_update_note_dry_run_raises_when_missing(self):
+        client = MagicMock()
+        client.find_notes.return_value = []
+        with pytest.raises(NoteNotFoundError):
+            _mgr(client).update_note(
+                "anki-manager::missing", {"Front": "x"}, dry_run=True,
+            )
+
+    def test_upsert_dry_run_create_path(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        result = _mgr(client).upsert_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"}, dry_run=True,
+        )
+        assert result.dry_run is True
+        assert result.created is True
+        assert result.note_id == 0
+        client.add_note.assert_not_called()
+        client.update_note_fields.assert_not_called()
+
+    def test_upsert_dry_run_update_path(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = [222]
+        result = _mgr(client).upsert_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"}, dry_run=True,
+        )
+        assert result.dry_run is True
+        assert result.created is False
+        assert result.note_id == 222
+        client.update_note_fields.assert_not_called()
+
+
 class TestAllowlistEnforcement:
     def test_add_note_blocked_for_disallowed_deck(self):
         client = MagicMock()

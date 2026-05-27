@@ -143,12 +143,24 @@ pytest tests/test_lifecycle.py tests/test_manager.py    # unit (27 tests, no hos
 ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requires live unit
 ```
 
+## Dry-run
+
+All three write paths support a `dry_run=True` kwarg (`--dry-run` on the CLI). When set, the full validation pipeline runs — allowlist check, schema check, GUID-collision lookup — but no RPC write is sent.
+
+```sh
+anki-manager add-note --deck "Myrzka::Daily" --model "Myrzka Basic" \
+    --field "Front=..." --field "Back=..." --field "Source=..." --field "Tags=" \
+    --dry-run
+# → {"note_id": 0, "stable_guid": "anki-manager::...", "dry_run": true}
+```
+
+For `add-note`, `note_id` is `0` (sentinel — real Anki note IDs are positive). For `upsert-note`, `created` reflects what would have happened. For `update-note`, the lookup runs and the real note_id is returned (so you can confirm the target before applying the change).
+
 ## Deferred to a follow-up
 
-This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist. The original plan also calls for:
+This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist + dry-run. The original plan also calls for:
 
-- Backup-on-write with 3-day rolling retention
 - Single-writer lock (preventing two concurrent agents from writing to the same collection)
-- `dry-run` mode for `add-note`
+- Backup-on-write with 3-day rolling retention
 
-These will land in a follow-up version.
+These will land in subsequent commits.
