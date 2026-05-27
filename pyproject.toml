@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anki-manager"
+version = "0.1.0"
+description = "Lifecycle + domain manager for a headless Anki container"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+# anki-rpc is a sibling Great-Sarak package; install it editable from a
+# local checkout (see README) until it's published to a registry.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov"]
+
+[project.scripts]
+anki-manager = "anki_manager.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anki_manager"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,95 @@
+# anki-manager
+
+Lifecycle + domain manager for a headless Anki Desktop container. Layer 2 of the [Myrzka anki-skill stack](https://github.com/Great-Sarak/myrzka).
+
+Wraps [`anki-rpc`](https://github.com/Great-Sarak/anki-rpc) (Layer 1) with:
+
+- **Container lifecycle.** Talks to systemd (`kryshanti-anki.service`) via `systemctl`; ensures the container is running and AnkiConnect is answering before any domain op.
+- **Live schema validation.** Every `add_note` queries the model's field names from Anki and fails fast if the provided fields don't match — protects against silent corruption when the user renames a field in Anki Desktop.
+- **CLI.** `anki-manager start / stop / status / list-models / add-deck / add-note / sync / force-upload / force-download`.
+
+## Host prerequisites
+
+The kryshanti-anki systemd unit must be installed (done once-off via the `host-setup.sh` script in the [myrzka workspace](https://github.com/Great-Sarak/myrzka)'s `spikes/anki-docker/`). The invoking user must be in the `kryshanti-anki-users` group.
+
+## Install
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e ../anki-rpc_main   # sibling repo
+.venv/bin/pip install -e .
+```
+
+## CLI
+
+```sh
+anki-manager start         # ensure unit running + AnkiConnect ready
+anki-manager status        # JSON: active / ready / sub_state
+anki-manager list-models   # JSON: {model: [fields, ...]}
+anki-manager add-deck "Myrzka::Daily"
+anki-manager add-note \
+    --deck "Myrzka::Daily" \
+    --model "Myrzka Basic" \
+    --field "Front=Q" \
+    --field "Back=A" \
+    --field "Source=..." \
+    --field "Tags=" \
+    --tag mytag
+anki-manager sync
+```
+
+## Python API
+
+```python
+from anki_manager import AnkiManager
+
+mgr = AnkiManager()
+mgr.ensure_running()
+
+models = mgr.list_models()      # live; never cached
+note_id = mgr.add_note(
+    "Myrzka::Daily", "Myrzka Basic",
+    fields={"Front": "Q", "Back": "A", "Source": "...", "Tags": ""},
+)
+mgr.sync()
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│  AnkiManager        (domain + lifecycle)    │
+│    Lifecycle  ─────► systemctl              │
+│    Client     ─────► AnkiConnect HTTP       │
+└─────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────┐
+│  anki-rpc          (typed HTTP client)      │
+└─────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────┐
+│  kryshanti-anki.service  (systemd unit)     │
+│    docker run kryshanti-anki:25.02.7        │
+│      └─ Anki Desktop + AnkiConnect          │
+└─────────────────────────────────────────────┘
+```
+
+## Testing
+
+```sh
+pytest tests/test_lifecycle.py tests/test_manager.py    # unit (27 tests, no host needed)
+ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requires live unit
+```
+
+## Deferred to a follow-up
+
+This package implements the lifecycle + golden-path domain ops. The original plan also calls for:
+
+- Deck allowlist enforcement
+- Backup-on-write with 3-day rolling retention
+- Single-writer lock (preventing two concurrent agents from writing to the same collection)
+- `dry-run` mode for `add-note`
+
+These will land in a follow-up version.
