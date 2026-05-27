@@ -61,9 +61,9 @@ def test_add_deck_and_note_round_trip(mgr: AnkiManager):
     fields = {f: "" for f in mgr.list_models()[MODEL_BASIC]}
     fields["Front"] = "integration-test-q"
     fields["Back"] = "integration-test-a"
-    note_id = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
-    assert isinstance(note_id, int)
-    assert note_id in mgr.call("findNotes", query=f'tag:anki-manager-test')
+    result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+    assert isinstance(result.note_id, int)
+    assert result.note_id in mgr.call("findNotes", query='tag:anki-manager-test')
 
 
 def test_add_note_validates_unknown_field(mgr: AnkiManager):
@@ -77,3 +77,56 @@ def test_sync_does_not_raise(mgr: AnkiManager):
     # AnkiWeb already has the spike data (forceUpload run earlier in the spike).
     # `sync` should succeed (NO_CHANGES or NORMAL_SYNC) after any test mutations.
     mgr.sync()
+
+
+def test_guid_round_trip(mgr: AnkiManager):
+    """add -> find_by_guid -> update -> verify -> upsert (idempotent)."""
+    from anki_manager import NoteExistsError
+
+    mgr.add_deck(DECK)
+    fields = {f: "" for f in mgr.list_models()[MODEL_BASIC]}
+    fields["Front"] = "guid-round-trip-q"
+    fields["Back"] = "guid-round-trip-a-original"
+    fields["Source"] = "phase4-integration"
+
+    # 1. Add a note; GUID is derived from Source + Front.
+    add_result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+    assert add_result.stable_guid.startswith("anki-manager::")
+
+    # 2. find_by_guid returns the same note_id
+    assert mgr.find_by_guid(add_result.stable_guid) == add_result.note_id
+
+    # 3. Adding the same content again raises NoteExistsError
+    with pytest.raises(NoteExistsError, match=str(add_result.note_id)):
+        mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+
+    # 4. update_note changes fields, GUID unchanged
+    mgr.update_note(add_result.stable_guid, {"Back": "guid-round-trip-a-updated"})
+    info = mgr.call("notesInfo", notes=[add_result.note_id])
+    assert info[0]["fields"]["Back"]["value"] == "guid-round-trip-a-updated"
+
+    # 5. upsert with same content updates without raising
+    fields["Back"] = "guid-round-trip-a-upserted"
+    upsert_result = mgr.upsert_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+    assert upsert_result.created is False
+    assert upsert_result.note_id == add_result.note_id
+    assert upsert_result.stable_guid == add_result.stable_guid
+
+
+def test_upsert_creates_new_when_absent(mgr: AnkiManager):
+    """upsert on previously-unseen content should create a fresh note."""
+    mgr.add_deck(DECK)
+    fields = {f: "" for f in mgr.list_models()[MODEL_BASIC]}
+    fields["Front"] = "upsert-fresh-q"
+    fields["Back"] = "upsert-fresh-a"
+    fields["Source"] = "phase4-integration-upsert"
+
+    result = mgr.upsert_note(DECK, MODEL_BASIC, fields=fields)
+    assert result.created is True
+    assert mgr.find_by_guid(result.stable_guid) == result.note_id
+
+
+def test_update_note_raises_for_missing_guid(mgr: AnkiManager):
+    from anki_manager import NoteNotFoundError
+    with pytest.raises(NoteNotFoundError):
+        mgr.update_note("anki-manager::ffffffffffffffff", {"Front": "x"})

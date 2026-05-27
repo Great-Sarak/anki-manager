@@ -4,7 +4,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from anki_manager import AnkiManager, InvalidNoteError
+from anki_manager import (
+    AnkiManager,
+    InvalidNoteError,
+    NoteExistsError,
+    NoteNotFoundError,
+)
+from anki_manager.guid import compute_guid
 
 
 def _mgr(client, lifecycle=None):
@@ -15,18 +21,19 @@ class TestAddNoteValidation:
     def test_passes_through_when_fields_match(self):
         client = MagicMock()
         client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
         client.add_note.return_value = 999
         result = _mgr(client).add_note(
             "Deck", "Basic",
             fields={"Front": "Q", "Back": "A"},
             tags=["t"],
         )
-        assert result == 999
-        client.add_note.assert_called_once_with(
-            deck="Deck", model="Basic",
-            fields={"Front": "Q", "Back": "A"},
-            tags=["t"],
-        )
+        assert result.note_id == 999
+        assert result.stable_guid.startswith("anki-manager::")
+        # Tag list should include the user's tag + the stable GUID
+        call_tags = client.add_note.call_args.kwargs["tags"]
+        assert "t" in call_tags
+        assert result.stable_guid in call_tags
 
     def test_raises_when_unknown_model(self):
         client = MagicMock()
@@ -57,6 +64,101 @@ class TestAddNoteValidation:
         client.model_field_names.return_value = ["Front", "Back"]
         with pytest.raises(InvalidNoteError):
             _mgr(client).add_note("D", "Basic", fields={"Front": "Q"})
+        client.add_note.assert_not_called()
+
+
+class TestAddNoteGuidHandling:
+    def test_explicit_stable_guid_is_used(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 42
+        explicit = "anki-manager::deadbeefdeadbeef"
+        result = _mgr(client).add_note(
+            "D", "Basic",
+            fields={"Front": "q", "Back": "a"},
+            stable_guid=explicit,
+        )
+        assert result.stable_guid == explicit
+        assert explicit in client.add_note.call_args.kwargs["tags"]
+
+    def test_derived_guid_matches_compute_guid_of_source_and_front(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back", "Source"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+        result = _mgr(client).add_note(
+            "D", "Basic",
+            fields={"Front": "q", "Back": "a", "Source": "memory.md"},
+        )
+        assert result.stable_guid == compute_guid("memory.md", "q")
+
+    def test_raises_when_guid_already_exists(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = [123]
+        with pytest.raises(NoteExistsError, match="123"):
+            _mgr(client).add_note("D", "Basic", fields={"Front": "q", "Back": "a"})
+        client.add_note.assert_not_called()
+
+
+class TestFindByGuid:
+    def test_returns_note_id(self):
+        client = MagicMock()
+        client.find_notes.return_value = [555]
+        assert _mgr(client).find_by_guid("anki-manager::abc") == 555
+        client.find_notes.assert_called_once_with("tag:anki-manager::abc")
+
+    def test_returns_none_when_missing(self):
+        client = MagicMock()
+        client.find_notes.return_value = []
+        assert _mgr(client).find_by_guid("anki-manager::xyz") is None
+
+    def test_raises_when_multiple_match(self):
+        client = MagicMock()
+        client.find_notes.return_value = [1, 2]
+        with pytest.raises(NoteExistsError, match="Multiple"):
+            _mgr(client).find_by_guid("anki-manager::dupe")
+
+
+class TestUpdateNote:
+    def test_updates_fields_of_existing_note(self):
+        client = MagicMock()
+        client.find_notes.return_value = [999]
+        note_id = _mgr(client).update_note("anki-manager::abc", {"Front": "new"})
+        assert note_id == 999
+        client.update_note_fields.assert_called_once_with(999, {"Front": "new"})
+
+    def test_raises_when_note_missing(self):
+        client = MagicMock()
+        client.find_notes.return_value = []
+        with pytest.raises(NoteNotFoundError):
+            _mgr(client).update_note("anki-manager::missing", {"Front": "x"})
+
+
+class TestUpsertNote:
+    def test_creates_when_absent(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 111
+        result = _mgr(client).upsert_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"},
+        )
+        assert result.created is True
+        assert result.note_id == 111
+        client.update_note_fields.assert_not_called()
+
+    def test_updates_when_present(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = [222]
+        result = _mgr(client).upsert_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"},
+        )
+        assert result.created is False
+        assert result.note_id == 222
+        client.update_note_fields.assert_called_once_with(222, {"Front": "q", "Back": "a"})
         client.add_note.assert_not_called()
 
 

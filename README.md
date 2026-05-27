@@ -35,8 +35,31 @@ anki-manager add-note \
     --field "Source=..." \
     --field "Tags=" \
     --tag mytag
+# → {"note_id": ..., "stable_guid": "anki-manager::<hash>"}
+
+anki-manager update-note --stable-guid "anki-manager::<hash>" --field "Back=new"
+anki-manager upsert-note --deck "..." --model "..." --field "Front=..." --field "..."
+# → {"note_id": ..., "stable_guid": "...", "created": true|false}
+
+anki-manager find-by-guid "anki-manager::<hash>"   # → note_id or null
 anki-manager sync
 ```
+
+## Stable GUIDs
+
+Every agent-added note is tagged with a deterministic identifier of the form
+`anki-manager::<sha256(source + NUL + front)[:16]>`. The tag is the lookup
+key for `update-note`, `find-by-guid`, and `upsert-note` — letting the agent
+amend or re-detect a note later without tracking Anki's internal note IDs.
+
+The GUID is derived automatically from the `Source` and `Front` (or `Text`,
+for cloze models) field values in the supplied `--field` payload. Pass
+`--stable-guid anki-manager::<hex>` explicitly when the heuristic doesn't
+apply (e.g. a non-Myrzka model with unusual field naming).
+
+A content change to either the source or front fields produces a **new**
+GUID — by design, that's a new note, not an amendment. To amend an existing
+note, use `update-note --stable-guid ...` with the original GUID.
 
 ## Python API
 
@@ -85,7 +108,7 @@ ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requir
 
 ## Deferred to a follow-up
 
-This package implements the lifecycle + golden-path domain ops. The original plan also calls for:
+This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert. The original plan also calls for:
 
 - Deck allowlist enforcement
 - Backup-on-write with 3-day rolling retention

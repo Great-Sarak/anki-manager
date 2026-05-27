@@ -44,6 +44,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Field as NAME=VALUE; repeat for each field on the model.",
     )
     p_note.add_argument("--tag", action="append", default=[], help="Tag to apply (repeatable)")
+    p_note.add_argument(
+        "--stable-guid",
+        default=None,
+        help="Stable GUID tag (anki-manager::...). Derived from source+front fields if omitted.",
+    )
+
+    p_update = sub.add_parser("update-note", help="Update a note's fields by stable GUID")
+    p_update.add_argument("--stable-guid", required=True)
+    p_update.add_argument(
+        "--field", action="append", required=True, type=_parse_field,
+        help="Field as NAME=VALUE; only listed fields are updated.",
+    )
+
+    p_upsert = sub.add_parser("upsert-note", help="Add the note if missing, update fields if present")
+    p_upsert.add_argument("--deck", required=True)
+    p_upsert.add_argument("--model", required=True)
+    p_upsert.add_argument("--field", action="append", required=True, type=_parse_field)
+    p_upsert.add_argument("--tag", action="append", default=[])
+    p_upsert.add_argument("--stable-guid", default=None)
+
+    p_find = sub.add_parser("find-by-guid", help="Print the note_id for a stable GUID, or 'null'")
+    p_find.add_argument("stable_guid")
 
     args = parser.parse_args(argv)
     mgr = AnkiManager()
@@ -88,14 +110,36 @@ def _dispatch(mgr: AnkiManager, args: argparse.Namespace) -> int:
             deck_id = mgr.add_deck(args.name)
             print(deck_id)
         case "add-note":
-            fields = dict(args.field)
-            note_id = mgr.add_note(
+            result = mgr.add_note(
                 deck=args.deck,
                 model=args.model,
-                fields=fields,
+                fields=dict(args.field),
                 tags=args.tag or None,
+                stable_guid=args.stable_guid,
             )
+            print(json.dumps({
+                "note_id": result.note_id,
+                "stable_guid": result.stable_guid,
+            }))
+        case "update-note":
+            note_id = mgr.update_note(args.stable_guid, dict(args.field))
             print(note_id)
+        case "upsert-note":
+            result = mgr.upsert_note(
+                deck=args.deck,
+                model=args.model,
+                fields=dict(args.field),
+                tags=args.tag or None,
+                stable_guid=args.stable_guid,
+            )
+            print(json.dumps({
+                "note_id": result.note_id,
+                "stable_guid": result.stable_guid,
+                "created": result.created,
+            }))
+        case "find-by-guid":
+            note_id = mgr.find_by_guid(args.stable_guid)
+            print(json.dumps(note_id))
     return 0
 
 
