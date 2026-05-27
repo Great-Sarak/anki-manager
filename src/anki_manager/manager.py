@@ -158,16 +158,25 @@ class AnkiManager:
     # ------------------------------------------------------------------ #
 
     def ensure_running(self) -> None:
+        """Start the kryshanti-anki systemd unit if not active, then block until
+        AnkiConnect answers. Idempotent — no-op when the unit is already running.
+
+        Raises LifecycleError if systemd refuses to start the unit, or NotReadyError
+        if AnkiConnect doesn't answer within config.ready_timeout."""
         self._lifecycle.ensure_running()
 
     def stop(self) -> None:
+        """Stop the kryshanti-anki systemd unit. Idempotent."""
         self._lifecycle.stop()
 
     def restart(self) -> None:
+        """Restart the unit and block until AnkiConnect answers again. Useful after
+        an Anki-side config change that needs a fresh process."""
         self._lifecycle.restart()
         self._lifecycle.wait_ready()
 
     def status(self) -> Status:
+        """Return a Status snapshot — active, ready, sub_state. Cheap; no RPC writes."""
         return self._lifecycle.status()
 
     # ------------------------------------------------------------------ #
@@ -376,6 +385,9 @@ class AnkiManager:
         return UpsertResult(note_id=note_id, stable_guid=stable_guid, created=True)
 
     def sync(self) -> None:
+        """Trigger AnkiWeb sync. Does NOT take the writer lock — sync can run minutes
+        and isn't write-critical from the agent's perspective; concurrent agents may
+        sync independently."""
         self._rpc.sync()
 
     def _validate_fields(
@@ -401,9 +413,15 @@ class AnkiManager:
             )
 
     def force_upload(self) -> None:
+        """Force AnkiWeb to accept the local collection as authoritative (FULL_SYNC up).
+        Destructive — overwrites whatever is on AnkiWeb. Use only when local is known
+        good and remote is stale or corrupted."""
         self._rpc.force_upload()
 
     def force_download(self) -> None:
+        """Force AnkiWeb to overwrite the local collection (FULL_SYNC down). Destructive —
+        any local changes not yet synced will be lost. Use only when remote is known
+        good and local is stale or corrupted."""
         self._rpc.force_download()
 
     # ------------------------------------------------------------------ #
