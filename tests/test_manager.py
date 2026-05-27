@@ -26,7 +26,9 @@ _DEFAULT_AGENT = AgentEntry(
 _DEFAULT_ALLOWLIST = Allowlist(universal=(), agents={"Test": _DEFAULT_AGENT})
 # lock_path=None disables the cross-process flock for unit tests; we
 # exercise the lock itself in tests/test_lock.py.
-_NO_LOCK_CONFIG = Config(lock_path=None)
+# auto_backup=False keeps existing tests from calling create_backup on
+# the fake client (we test backup behavior explicitly in TestAutoBackup).
+_NO_LOCK_CONFIG = Config(lock_path=None, auto_backup=False)
 
 
 def _mgr(client, lifecycle=None, *, allowlist=_DEFAULT_ALLOWLIST, agent=_DEFAULT_AGENT, config=None):
@@ -327,6 +329,89 @@ class TestDryRun:
         assert result.created is False
         assert result.note_id == 222
         client.update_note_fields.assert_not_called()
+
+
+class TestAutoBackup:
+    @staticmethod
+    def _backup_mgr(client, *, auto_backup=True):
+        config = Config(lock_path=None, auto_backup=auto_backup)
+        return AnkiManager(
+            config=config, client=client, lifecycle=MagicMock(),
+            allowlist=_DEFAULT_ALLOWLIST, agent=_DEFAULT_AGENT,
+        )
+
+    def test_backup_taken_before_first_write(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+        self._backup_mgr(client).add_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"},
+        )
+        client.create_backup.assert_called_once()
+
+    def test_backup_taken_only_once_per_instance(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+        mgr = self._backup_mgr(client)
+        mgr.add_note("D", "Basic", fields={"Front": "q1", "Back": "a1"})
+        mgr.add_note("D", "Basic", fields={"Front": "q2", "Back": "a2"})
+        # Only one backup despite two add_note calls
+        assert client.create_backup.call_count == 1
+
+    def test_backup_skipped_when_disabled(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+        self._backup_mgr(client, auto_backup=False).add_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"},
+        )
+        client.create_backup.assert_not_called()
+
+    def test_backup_skipped_for_dry_run(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        self._backup_mgr(client).add_note(
+            "D", "Basic",
+            fields={"Front": "q", "Back": "a"},
+            dry_run=True,
+        )
+        client.create_backup.assert_not_called()
+
+    def test_manual_create_backup_sets_session_flag(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+        mgr = self._backup_mgr(client)
+        mgr.create_backup()
+        # subsequent add_note should NOT trigger another backup
+        mgr.add_note("D", "Basic", fields={"Front": "q", "Back": "a"})
+        assert client.create_backup.call_count == 1
+
+    def test_backup_runs_before_writer_lock_engages(self):
+        """create_backup() must happen before find_by_guid+add_note window
+        — Anki is taking an atomic snapshot and we don't want to hold the
+        flock during that potentially slow operation.
+        """
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+
+        call_order: list[str] = []
+        client.create_backup.side_effect = lambda: call_order.append("backup")
+        client.find_notes.side_effect = lambda q: call_order.append("find") or []
+        client.add_note.side_effect = lambda **kw: call_order.append("add") or 1
+
+        self._backup_mgr(client).add_note(
+            "D", "Basic", fields={"Front": "q", "Back": "a"},
+        )
+        assert call_order == ["backup", "find", "add"]
 
 
 class TestAllowlistEnforcement:

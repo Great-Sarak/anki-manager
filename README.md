@@ -159,6 +159,29 @@ The lock is held only across the lookup + write window, **not** across
 the lock can't be acquired in that window. Pass `Config(lock_path=None)`
 to disable locking entirely (single-process tests only).
 
+## Backup
+
+A backup of the collection is automatically created once per AnkiManager
+instance, just before the first mutating write (`add_note` /
+`update_note` / `upsert_note`). The backup uses Anki's own
+`create_backup_now()` machinery — atomic snapshot to a `.colpkg` in the
+profile's `backups/` folder. Retention is governed by Anki's own
+preferences (Tools → Preferences → Backups inside the container), not
+by this package.
+
+Manual trigger:
+
+```sh
+anki-manager create-backup
+```
+
+Disable per-session via `Config(auto_backup=False)`. Dry-run writes
+also skip the backup (nothing's being changed).
+
+The `createBackup` action is not in upstream AnkiConnect — it lives in
+the spike's local patch `patches/0002-add-createBackup.patch`, separate
+from the force-sync patch so it can be PR'd to upstream independently.
+
 ## Dry-run
 
 All three write paths support a `dry_run=True` kwarg (`--dry-run` on the CLI). When set, the full validation pipeline runs — allowlist check, schema check, GUID-collision lookup — but no RPC write is sent.
@@ -174,9 +197,6 @@ For `add-note`, `note_id` is `0` (sentinel — real Anki note IDs are positive).
 
 ## Deferred to a follow-up
 
-This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist + dry-run + writer lock. The original plan also calls for:
+This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist + dry-run + writer lock + backup-on-write. All originally-planned Layer 2 features are in.
 
-- Backup-on-write with 3-day rolling retention
-
-This will land in a subsequent commit (alongside a `createBackup` patch
-to AnkiConnect on a separate branch).
+Retention is currently delegated to Anki's own backup preferences (Tools → Preferences → Backups in the container). If you want stricter rolling retention than Anki's defaults, configure those prefs; we can add agent-side pruning later if needed.

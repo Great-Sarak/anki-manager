@@ -162,6 +162,16 @@ def test_writer_lock_present_and_usable(mgr: AnkiManager):
         pass
 
 
+def test_create_backup_round_trip(mgr: AnkiManager):
+    """createBackup should complete without error against the live unit.
+
+    File-presence verification has to happen container-side because the
+    backup folder is owned by liora-mosspelt; verified manually during
+    spike work (see commit log).
+    """
+    mgr.create_backup()
+
+
 def test_dry_run_add_note_does_not_mutate(mgr: AnkiManager):
     """A dry-run add_note shouldn't create a note in Anki."""
     mgr.add_deck(DECK)

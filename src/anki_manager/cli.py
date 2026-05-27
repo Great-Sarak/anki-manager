@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sync", help="Sync the local collection with AnkiWeb")
     sub.add_parser("force-upload", help="Upload local collection to AnkiWeb (FULL_SYNC)")
     sub.add_parser("force-download", help="Download AnkiWeb collection (FULL_SYNC)")
+    sub.add_parser("create-backup", help="Trigger an immediate Anki backup")
     sub.add_parser("list-models", help="Print {model: [fields]} as JSON")
 
     p_deck = sub.add_parser("add-deck", help="Create a deck if it does not exist")
@@ -141,6 +142,9 @@ def _dispatch(mgr: AnkiManager, args: argparse.Namespace) -> int:
         case "force-download":
             mgr.force_download()
             print("downloaded")
+        case "create-backup":
+            mgr.create_backup()
+            print("backup created")
         case "list-models":
             print(json.dumps(mgr.list_models(), indent=2))
         case "add-deck":

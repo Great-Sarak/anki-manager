@@ -74,6 +74,10 @@ class AnkiManager:
         # avoids needing the file on import for code that only uses lifecycle.
         self._agent_cached: AgentEntry | None = agent
         self._agent_resolved: bool = agent is not None
+        # One backup per AnkiManager instance, taken just before the first
+        # mutating write (add/update/upsert).  Tracked here so we don't
+        # spam the backup folder on every call.
+        self._backup_done: bool = False
 
     # ------------------------------------------------------------------ #
     # Allowlist access                                                    #
@@ -103,6 +107,30 @@ class AnkiManager:
     def effective_allowlist(self) -> tuple[str, ...]:
         """Inspect the patterns this AnkiManager will let through."""
         return self._get_allowlist().effective_patterns(self._get_agent())
+
+    # ------------------------------------------------------------------ #
+    # Backup                                                              #
+    # ------------------------------------------------------------------ #
+
+    def create_backup(self) -> None:
+        """Manually trigger a backup.  Sets the session backup flag so the
+        next auto-backup hook is a no-op (we only need one per session).
+        """
+        self._rpc.create_backup()
+        self._backup_done = True
+
+    def _auto_backup_if_needed(self, dry_run: bool) -> None:
+        """Take the per-session backup before the first real write.
+
+        Skipped when:
+          - config.auto_backup is False
+          - already taken in this AnkiManager instance
+          - the current call is dry_run=True (no real write would happen)
+        """
+        if dry_run or not self._config.auto_backup or self._backup_done:
+            return
+        self._rpc.create_backup()
+        self._backup_done = True
 
     # ------------------------------------------------------------------ #
     # Write lock                                                          #
@@ -224,6 +252,8 @@ class AnkiManager:
                 front=derive_front(fields, available),
             )
 
+        self._auto_backup_if_needed(dry_run)
+
         # Hold the writer lock across the lookup + write to close the
         # TOCTOU race with concurrent agents adding the same GUID.
         # For dry_run we don't need the lock — no write happens — but
@@ -274,6 +304,8 @@ class AnkiManager:
         NoteNotFoundError if absent) but no field update happens.  The
         returned int is still the would-update note_id.
         """
+        self._auto_backup_if_needed(dry_run)
+
         with self._writer_lock():
             note_id = self.find_by_guid(stable_guid)
             if note_id is None:
@@ -320,6 +352,8 @@ class AnkiManager:
                 source=derive_source(fields),
                 front=derive_front(fields, available),
             )
+
+        self._auto_backup_if_needed(dry_run)
 
         with self._writer_lock():
             existing = self.find_by_guid(stable_guid)

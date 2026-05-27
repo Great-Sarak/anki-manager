@@ -18,3 +18,8 @@ class Config:
     # Cross-process write lock — set lock_path=None to disable (tests).
     lock_path: Path | None = Path("/var/lib/kryshanti-anki/writer.lock")
     lock_timeout: float = 30.0
+    # Trigger Anki to create a backup once per AnkiManager instance, before
+    # the first add/update/upsert. Retention is governed by Anki's own
+    # backup preferences (Tools → Preferences → Backups inside the
+    # container), not by us. Disable for short-lived integration tests.
+    auto_backup: bool = True
