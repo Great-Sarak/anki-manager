@@ -67,6 +67,31 @@ def main(argv: list[str] | None = None) -> int:
     p_find = sub.add_parser("find-by-guid", help="Print the note_id for a stable GUID, or 'null'")
     p_find.add_argument("stable_guid")
 
+    p_perm = sub.add_parser("permissions", help="Inspect or mutate the allowlist")
+    perm_sub = p_perm.add_subparsers(dest="perm_cmd", required=True)
+
+    p_show = perm_sub.add_parser("show", help="Print the effective allowlist as JSON")
+    p_show.add_argument("--agent", default=None, help="Show as if running as this agent's name")
+
+    def add_target(p: argparse.ArgumentParser) -> None:
+        grp = p.add_mutually_exclusive_group()
+        grp.add_argument("--agent", default=None, help="Section name (defaults to invoker's agent)")
+        grp.add_argument("--universal", action="store_true", help="Operate on the universal section")
+
+    p_perm_add = perm_sub.add_parser("add", help="Append a pattern (sudo/polkit gated)")
+    p_perm_add.add_argument("--pattern", required=True)
+    add_target(p_perm_add)
+
+    p_perm_rm = perm_sub.add_parser("remove", help="Remove a pattern (sudo/polkit gated)")
+    p_perm_rm.add_argument("--pattern", required=True)
+    add_target(p_perm_rm)
+
+    p_grant = perm_sub.add_parser("grant-new", help="Grant <new> capability to an agent")
+    p_grant.add_argument("--agent", default=None)
+
+    p_revoke = perm_sub.add_parser("revoke-new", help="Revoke <new> capability from an agent")
+    p_revoke.add_argument("--agent", default=None)
+
     args = parser.parse_args(argv)
     mgr = AnkiManager()
 
@@ -140,6 +165,55 @@ def _dispatch(mgr: AnkiManager, args: argparse.Namespace) -> int:
         case "find-by-guid":
             note_id = mgr.find_by_guid(args.stable_guid)
             print(json.dumps(note_id))
+        case "permissions":
+            return _dispatch_permissions(mgr, args)
+    return 0
+
+
+def _resolve_section(mgr: AnkiManager, args: argparse.Namespace) -> str:
+    if getattr(args, "universal", False):
+        return "universal"
+    if args.agent is not None:
+        return args.agent
+    agent = mgr._get_agent()  # noqa: SLF001  — small CLI helper
+    if agent is None:
+        raise SystemExit("error: no agent section claims this user; pass --agent or --universal")
+    return agent.name
+
+
+def _dispatch_permissions(mgr: AnkiManager, args: argparse.Namespace) -> int:
+    from . import permissions
+
+    match args.perm_cmd:
+        case "show":
+            allowlist = mgr._get_allowlist()  # noqa: SLF001
+            if args.agent:
+                agent = allowlist.agents.get(args.agent)
+            else:
+                agent = mgr._get_agent()  # noqa: SLF001
+            print(json.dumps({
+                "agent": agent.name if agent else None,
+                "has_new": allowlist.has_new_capability(agent),
+                "patterns": list(allowlist.effective_patterns(agent)),
+                "universal": list(allowlist.universal),
+                "agent_patterns": list(agent.patterns) if agent else [],
+            }, indent=2))
+        case "add":
+            section = _resolve_section(mgr, args)
+            permissions.add_pattern(section, args.pattern)
+            print(f"added {args.pattern!r} to [{section}]")
+        case "remove":
+            section = _resolve_section(mgr, args)
+            permissions.remove_pattern(section, args.pattern)
+            print(f"removed {args.pattern!r} from [{section}]")
+        case "grant-new":
+            section = _resolve_section(mgr, args)
+            permissions.grant_new(section)
+            print(f"granted <new> to [{section}]")
+        case "revoke-new":
+            section = _resolve_section(mgr, args)
+            permissions.revoke_new(section)
+            print(f"revoked <new> from [{section}]")
     return 0
 
 

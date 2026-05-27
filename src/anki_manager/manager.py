@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from anki_rpc import Client
 
+from . import permissions
+from .allowlist import AgentEntry, Allowlist, DeckNotAllowedError
 from .config import Config
 from .errors import (
     InvalidNoteError,
@@ -42,6 +45,8 @@ class AnkiManager:
         *,
         client: Client | None = None,
         lifecycle: Lifecycle | None = None,
+        allowlist: Allowlist | None = None,
+        agent: AgentEntry | None = None,
     ) -> None:
         self._config = config or Config()
         self._rpc = client or Client(
@@ -55,6 +60,41 @@ class AnkiManager:
             client=self._rpc,
             ready_timeout=self._config.ready_timeout,
         )
+        # Load allowlist lazily so callers can stub it for testing.
+        self._allowlist: Allowlist | None = allowlist
+        # Agent identity resolution happens at first use, not __init__ —
+        # avoids needing the file on import for code that only uses lifecycle.
+        self._agent_cached: AgentEntry | None = agent
+        self._agent_resolved: bool = agent is not None
+
+    # ------------------------------------------------------------------ #
+    # Allowlist access                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _get_allowlist(self) -> Allowlist:
+        if self._allowlist is None:
+            self._allowlist = Allowlist.load()
+        return self._allowlist
+
+    def _get_agent(self) -> AgentEntry | None:
+        if not self._agent_resolved:
+            self._agent_cached = self._get_allowlist().resolve_agent()
+            self._agent_resolved = True
+        return self._agent_cached
+
+    def _require_allowed(self, deck: str) -> None:
+        allowlist = self._get_allowlist()
+        agent = self._get_agent()
+        if not allowlist.matches(deck, agent):
+            agent_name = agent.name if agent else "<no-agent>"
+            raise DeckNotAllowedError(
+                f"Deck {deck!r} is not in the effective allowlist for agent {agent_name!r}. "
+                f"Run `anki-manager permissions add --pattern '{deck}'` to grant access."
+            )
+
+    def effective_allowlist(self) -> tuple[str, ...]:
+        """Inspect the patterns this AnkiManager will let through."""
+        return self._get_allowlist().effective_patterns(self._get_agent())
 
     # ------------------------------------------------------------------ #
     # Lifecycle pass-throughs                                             #
@@ -87,6 +127,32 @@ class AnkiManager:
         return {name: self._rpc.model_field_names(name) for name in models}
 
     def add_deck(self, name: str) -> int:
+        """Create the deck, or no-op if it already exists.
+
+        Enforces the allowlist.  If the deck name doesn't match any current
+        pattern but the invoking agent has the `<new>` capability, this
+        method invokes the privileged helper to append the deck name to
+        the agent's section, reloads the allowlist, and retries — so a
+        single call adds both the deck and its permission.
+        """
+        allowlist = self._get_allowlist()
+        agent = self._get_agent()
+        if not allowlist.matches(name, agent):
+            if allowlist.has_new_capability(agent) and agent is not None:
+                permissions.add_pattern(agent.name, name)
+                # Reload the file (helper just wrote to it) but keep the
+                # already-resolved agent identity — re-resolving via
+                # _current_username() would defeat caller-provided
+                # `agent=` in tests and is unnecessary anyway.
+                self._allowlist = Allowlist.load()
+                # Re-fetch the agent entry from the new allowlist (its
+                # patterns will now include the new deck).
+                refreshed = self._allowlist.agents.get(agent.name)
+                if refreshed is not None:
+                    self._agent_cached = refreshed
+                self._require_allowed(name)
+            else:
+                self._require_allowed(name)  # raises with helpful message
         return self._rpc.add_deck(name)
 
     def add_note(
@@ -101,6 +167,7 @@ class AnkiManager:
         """Add a note with live schema validation + stable GUID tagging.
 
         Fails fast if:
+          - the deck isn't in the effective allowlist (DeckNotAllowedError)
           - the provided fields don't match the model's current schema
             (InvalidNoteError)
           - a note with the same stable GUID already exists
@@ -110,6 +177,8 @@ class AnkiManager:
         `front`/`text` fields using `guid.derive_*`.  Pass an explicit
         `stable_guid` when those heuristics don't apply.
         """
+        self._require_allowed(deck)
+
         available = self._rpc.model_field_names(model)
         if not available:
             raise InvalidNoteError(f"Model {model!r} not found in collection")
@@ -172,7 +241,13 @@ class AnkiManager:
         if the call specifies different ones — only the field values are
         synced.  If you need to move a note between decks, use a direct
         `call("changeDeck", ...)` escape hatch.
+
+        Enforces the allowlist on the requested `deck` regardless of
+        whether the existing note already lives there — keeps the
+        permission check consistent with add_note.
         """
+        self._require_allowed(deck)
+
         available = self._rpc.model_field_names(model)
         if not available:
             raise InvalidNoteError(f"Model {model!r} not found in collection")

@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from anki_manager import (
+    AgentEntry,
+    Allowlist,
     AnkiManager,
+    DeckNotAllowedError,
     InvalidNoteError,
     NoteExistsError,
     NoteNotFoundError,
@@ -13,8 +16,22 @@ from anki_manager import (
 from anki_manager.guid import compute_guid
 
 
-def _mgr(client, lifecycle=None):
-    return AnkiManager(client=client, lifecycle=lifecycle or MagicMock())
+_DEFAULT_AGENT = AgentEntry(
+    name="Test",
+    patterns=("D", "Deck", "Myrzka::*", "anki-rpc-test"),
+    aliases=("tester",),
+    has_new=False,
+)
+_DEFAULT_ALLOWLIST = Allowlist(universal=(), agents={"Test": _DEFAULT_AGENT})
+
+
+def _mgr(client, lifecycle=None, *, allowlist=_DEFAULT_ALLOWLIST, agent=_DEFAULT_AGENT):
+    return AnkiManager(
+        client=client,
+        lifecycle=lifecycle or MagicMock(),
+        allowlist=allowlist,
+        agent=agent,
+    )
 
 
 class TestAddNoteValidation:
@@ -217,3 +234,83 @@ class TestLifecyclePassthroughs:
         _mgr(MagicMock(), lifecycle=lc).restart()
         lc.restart.assert_called_once()
         lc.wait_ready.assert_called_once()
+
+
+class TestAllowlistEnforcement:
+    def test_add_note_blocked_for_disallowed_deck(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        with pytest.raises(DeckNotAllowedError, match="OffLimits"):
+            _mgr(client).add_note(
+                "OffLimits", "Basic", fields={"Front": "q", "Back": "a"},
+            )
+        client.add_note.assert_not_called()
+
+    def test_add_note_allowed_when_deck_matches_pattern(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        client.find_notes.return_value = []
+        client.add_note.return_value = 1
+        _mgr(client).add_note(
+            "Myrzka::Daily", "Basic", fields={"Front": "q", "Back": "a"},
+        )
+        client.add_note.assert_called_once()
+
+    def test_upsert_blocked_for_disallowed_deck(self):
+        client = MagicMock()
+        client.model_field_names.return_value = ["Front", "Back"]
+        with pytest.raises(DeckNotAllowedError):
+            _mgr(client).upsert_note(
+                "OffLimits", "Basic", fields={"Front": "q", "Back": "a"},
+            )
+
+    def test_add_deck_blocked_without_new_capability(self):
+        client = MagicMock()
+        with pytest.raises(DeckNotAllowedError):
+            _mgr(client).add_deck("OffLimits::NewDeck")
+        client.add_deck.assert_not_called()
+
+    def test_add_deck_allowed_when_matches_pattern(self):
+        client = MagicMock()
+        client.add_deck.return_value = 12345
+        result = _mgr(client).add_deck("Myrzka::FreshDeck")
+        assert result == 12345
+
+    def test_add_deck_auto_extends_with_new_capability(self, monkeypatch):
+        client = MagicMock()
+        client.add_deck.return_value = 999
+
+        from anki_manager import permissions
+        calls: list[tuple[str, str]] = []
+        def fake_add_pattern(section, pattern):
+            calls.append((section, pattern))
+        monkeypatch.setattr(permissions, "add_pattern", fake_add_pattern)
+
+        # Build a mutable allowlist the manager can "reload" to a wider one
+        agent_with_new = AgentEntry(
+            name="Test",
+            patterns=("Myrzka::*",),
+            aliases=("tester",),
+            has_new=True,
+        )
+        allowlist_before = Allowlist(universal=(), agents={"Test": agent_with_new})
+        # After the helper "writes", reload returns an allowlist that includes
+        # the new pattern.  Patch Allowlist.load to simulate that.
+        agent_after = AgentEntry(
+            name="Test",
+            patterns=("Myrzka::*", "Brand::NewDeck"),
+            aliases=("tester",),
+            has_new=True,
+        )
+        allowlist_after = Allowlist(universal=(), agents={"Test": agent_after})
+        monkeypatch.setattr(Allowlist, "load", classmethod(lambda cls, path=None: allowlist_after))
+
+        mgr = AnkiManager(
+            client=client, lifecycle=MagicMock(),
+            allowlist=allowlist_before, agent=agent_with_new,
+        )
+        mgr.add_deck("Brand::NewDeck")
+
+        # Helper invoked exactly once with the new pattern
+        assert calls == [("Test", "Brand::NewDeck")]
+        client.add_deck.assert_called_once_with("Brand::NewDeck")

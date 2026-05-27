@@ -20,3 +20,7 @@ class NoteExistsError(AnkiManagerError):
 
 class NoteNotFoundError(AnkiManagerError):
     """Raised when update_note or find_by_guid cannot locate a note for the given GUID."""
+
+
+class PermissionsHelperError(AnkiManagerError):
+    """Raised when the privileged grant-deck helper invocation fails."""

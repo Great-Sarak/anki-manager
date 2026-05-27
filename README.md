@@ -45,6 +45,43 @@ anki-manager find-by-guid "anki-manager::<hash>"   # → note_id or null
 anki-manager sync
 ```
 
+## Permissions (deck allowlist)
+
+Writes are gated by a system-wide TOML allowlist at
+`/var/lib/kryshanti-anki/allowlist.toml`, installed (with a sensible
+starter) by `host-setup.sh`. Each agent has a section claiming a set
+of Linux usernames as aliases and listing patterns it may write to:
+
+```toml
+universal = []  # patterns every agent gets, regardless of identity
+
+[Myrzka]
+allowed = ["Myrzka::*", "Myrzka", "<new>"]
+aliases = ["sorotassu"]
+
+[Tava]
+allowed = ["Tava::*"]
+aliases = ["tava-user"]
+```
+
+Patterns use `fnmatch` semantics — `*` matches any sequence including
+`::`. The literal `<new>` is a capability flag, not a pattern: when
+present, the agent may call `add-deck` for a deck name not yet matched
+and the new name is appended to its section by the privileged
+`grant-deck` helper (invoked via pkexec, group-gated by polkit).
+
+```sh
+anki-manager permissions show
+anki-manager permissions add --pattern "Myrzka::NewDeck"       # invokes helper via pkexec
+anki-manager permissions remove --pattern "Old::Deck"
+anki-manager permissions grant-new                              # add <new> to invoker's agent
+anki-manager permissions revoke-new
+```
+
+Without `<new>`, attempting to write to a deck that isn't already in
+the agent's effective allowlist raises `DeckNotAllowedError` — fail
+closed; a missing allowlist file raises `AllowlistError`.
+
 ## Stable GUIDs
 
 Every agent-added note is tagged with a deterministic identifier of the form
@@ -108,9 +145,8 @@ ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requir
 
 ## Deferred to a follow-up
 
-This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert. The original plan also calls for:
+This package implements lifecycle + golden-path domain ops + stable-GUID update/upsert + deck allowlist. The original plan also calls for:
 
-- Deck allowlist enforcement
 - Backup-on-write with 3-day rolling retention
 - Single-writer lock (preventing two concurrent agents from writing to the same collection)
 - `dry-run` mode for `add-note`

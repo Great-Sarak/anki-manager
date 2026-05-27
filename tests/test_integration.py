@@ -130,3 +130,22 @@ def test_update_note_raises_for_missing_guid(mgr: AnkiManager):
     from anki_manager import NoteNotFoundError
     with pytest.raises(NoteNotFoundError):
         mgr.update_note("anki-manager::ffffffffffffffff", {"Front": "x"})
+
+
+def test_allowlist_blocks_disallowed_deck(mgr: AnkiManager):
+    """Requires the starter allowlist installed by host-setup.sh."""
+    from anki_manager import DeckNotAllowedError
+    fields = {f: "" for f in mgr.list_models()[MODEL_BASIC]}
+    fields["Front"] = "should-fail"
+    fields["Back"] = "should-fail"
+    fields["Source"] = "phase4-integration"
+    with pytest.raises(DeckNotAllowedError, match="OffLimits"):
+        mgr.add_note("OffLimits", MODEL_BASIC, fields=fields)
+
+
+def test_allowlist_show(mgr: AnkiManager):
+    """Effective allowlist should include the agent's patterns."""
+    patterns = mgr.effective_allowlist()
+    # The starter ships with Myrzka section claiming the invoking user,
+    # so we expect Myrzka::* in the effective set.
+    assert any("Myrzka" in p for p in patterns), f"got: {patterns}"
