@@ -61,9 +61,9 @@ def test_add_deck_and_note_round_trip(mgr: AnkiManager):
     fields = {f: "" for f in mgr.list_models()[MODEL_BASIC]}
     fields["Front"] = "integration-test-q"
     fields["Back"] = "integration-test-a"
-    result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+    result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-skill-testrun-manager"])
     assert isinstance(result.note_id, int)
-    assert result.note_id in mgr.call("findNotes", query='tag:anki-manager-test')
+    assert result.note_id in mgr.call("findNotes", query='tag:anki-skill-testrun-manager')
 
 
 def test_add_note_validates_unknown_field(mgr: AnkiManager):
@@ -90,7 +90,7 @@ def test_guid_round_trip(mgr: AnkiManager):
     fields["Source"] = "phase4-integration"
 
     # 1. Add a note; GUID is derived from Source + Front.
-    add_result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+    add_result = mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-skill-testrun-manager"])
     assert add_result.stable_guid.startswith("anki-manager::")
 
     # 2. find_by_guid returns the same note_id
@@ -98,7 +98,7 @@ def test_guid_round_trip(mgr: AnkiManager):
 
     # 3. Adding the same content again raises NoteExistsError
     with pytest.raises(NoteExistsError, match=str(add_result.note_id)):
-        mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+        mgr.add_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-skill-testrun-manager"])
 
     # 4. update_note changes fields, GUID unchanged
     mgr.update_note(add_result.stable_guid, {"Back": "guid-round-trip-a-updated"})
@@ -107,7 +107,7 @@ def test_guid_round_trip(mgr: AnkiManager):
 
     # 5. upsert with same content updates without raising
     fields["Back"] = "guid-round-trip-a-upserted"
-    upsert_result = mgr.upsert_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-manager-test"])
+    upsert_result = mgr.upsert_note(DECK, MODEL_BASIC, fields=fields, tags=["anki-skill-testrun-manager"])
     assert upsert_result.created is False
     assert upsert_result.note_id == add_result.note_id
     assert upsert_result.stable_guid == add_result.stable_guid
