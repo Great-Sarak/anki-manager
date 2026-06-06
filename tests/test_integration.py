@@ -4,6 +4,8 @@ Requires:
   - host-setup.sh has been run (creates the unit + polkit rule)
   - The invoking user is in the kryshanti-anki-users group
   - A current login session reflects that group membership (logout/in if not)
+  - The container is loaded with the test profile (default
+    ``_anki_skill_testrun``; override via ``KRYSHANTI_ANKI_TEST_PROFILE``)
 
 Run with:
     ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py -v
@@ -25,12 +27,24 @@ pytestmark = pytest.mark.skipif(
 
 DECK = "Myrzka::anki-manager-integration-test"
 MODEL_BASIC = "Myrzka Basic"
+EXPECTED_PROFILE = os.getenv("KRYSHANTI_ANKI_TEST_PROFILE", "_anki_skill_testrun")
 
 
 @pytest.fixture(scope="module")
 def mgr() -> AnkiManager:
     m = AnkiManager()
     m.ensure_running()
+    # Pin: refuse to run if the container is serving the wrong profile.
+    # Guards against integration tests silently mutating a real user
+    # collection if KRYSHANTI_ANKI_DEFAULT_PROFILE was flipped on the host.
+    active = m.call("getActiveProfile")
+    if active != EXPECTED_PROFILE:
+        pytest.skip(
+            f"Active profile is {active!r}, expected {EXPECTED_PROFILE!r}. "
+            f"Restart the kryshanti-anki unit with "
+            f"KRYSHANTI_ANKI_DEFAULT_PROFILE={EXPECTED_PROFILE} or set "
+            f"KRYSHANTI_ANKI_TEST_PROFILE to match the active profile."
+        )
     return m
 
 

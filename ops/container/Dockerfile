@@ -71,5 +71,9 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 8765
 
+# Profile selection lives in entrypoint.sh so it can read
+# KRYSHANTI_ANKI_DEFAULT_PROFILE from the environment. CMD is intentionally
+# minimal — overrides land at `docker run` time without breaking the profile
+# resolution path.
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["anki", "-b", "/data", "-l", "en", "-p", "User 1"]
+CMD []

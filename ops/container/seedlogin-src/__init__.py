@@ -1,4 +1,11 @@
-"""SeedLogin — one-shot AnkiWeb credential bootstrap, persisted to prefs21.db."""
+"""SeedLogin — one-shot AnkiWeb credential bootstrap, persisted to prefs21.db.
+
+Reads credentials from ``ANKIWEB_USERNAME_<profile>`` and
+``ANKIWEB_PASSWORD_<profile>`` first (where ``<profile>`` is the loaded
+profile's name, e.g. ``ANKIWEB_USERNAME__anki_skill_testrun`` for the
+``_anki_skill_testrun`` profile). Falls back to the unscoped legacy pair
+``ANKIWEB_USERNAME`` / ``ANKIWEB_PASSWORD`` for one release cycle.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +29,31 @@ def _log(msg: str) -> None:
         pass
 
 
+def _resolve_credentials(profile_name: str, trigger: str) -> tuple[str | None, str | None, str]:
+    """Look up (username, password, source_label) for the active profile.
+
+    Profile-scoped vars win (``ANKIWEB_USERNAME_<profile>``); unscoped legacy
+    vars are the fallback. ``source_label`` describes which path was used,
+    for logging.
+    """
+    scoped_user_key = f"ANKIWEB_USERNAME_{profile_name}"
+    scoped_pass_key = f"ANKIWEB_PASSWORD_{profile_name}"
+    user = os.environ.get(scoped_user_key)
+    pwd = os.environ.get(scoped_pass_key)
+    if user and pwd:
+        return user, pwd, f"scoped({scoped_user_key})"
+    legacy_user = os.environ.get("ANKIWEB_USERNAME")
+    legacy_pwd = os.environ.get("ANKIWEB_PASSWORD")
+    if legacy_user and legacy_pwd:
+        _log(
+            f"seedlogin[{trigger}]: using legacy unscoped ANKIWEB_USERNAME/"
+            f"PASSWORD for profile={profile_name!r}; migrate to "
+            f"{scoped_user_key}/{scoped_pass_key} before v0.2."
+        )
+        return legacy_user, legacy_pwd, "legacy(unscoped)"
+    return None, None, "missing"
+
+
 def _seed_login(trigger: str) -> None:
     if _DONE["v"]:
         return
@@ -34,13 +66,19 @@ def _seed_login(trigger: str) -> None:
             _log(f"seedlogin[{trigger}]: syncKey already set; no-op")
             _DONE["v"] = True
             return
-        username = os.environ.get("ANKIWEB_USERNAME")
-        password = os.environ.get("ANKIWEB_PASSWORD")
+        profile_name = mw.pm.name() if callable(getattr(mw.pm, "name", None)) else "<unknown>"
+        username, password, source = _resolve_credentials(profile_name, trigger)
         if not username or not password:
-            _log(f"seedlogin[{trigger}]: ANKIWEB_USERNAME/PASSWORD not set; no-op")
+            _log(
+                f"seedlogin[{trigger}]: no credentials for profile "
+                f"{profile_name!r} (checked scoped + legacy); no-op"
+            )
             _DONE["v"] = True
             return
-        _log(f"seedlogin[{trigger}]: attempting login username={username!r}")
+        _log(
+            f"seedlogin[{trigger}]: attempting login profile={profile_name!r} "
+            f"username={username!r} source={source}"
+        )
         auth = mw.col.sync_login(username=username, password=password, endpoint=None)
         _DONE["v"] = True
         hkey = getattr(auth, "hkey", None)

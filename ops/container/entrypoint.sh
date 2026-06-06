@@ -2,6 +2,7 @@
 set -e
 
 ANKI_BASE="${ANKI_BASE:-/data}"
+ANKI_PROFILE="${KRYSHANTI_ANKI_DEFAULT_PROFILE:-_anki_skill_testrun}"
 
 # Stage AnkiConnect addon into ANKI_BASE if missing (so a bind-mounted /data
 # still gets the addon on first run, without shadowing user state on later
@@ -11,7 +12,7 @@ ADDON_SRC="/opt/anki-addon-src/AnkiConnect"
 mkdir -p "${ANKI_BASE}/addons21"
 # Always refresh the addon code + config from the image-baked source on every
 # start (idempotent; image rebuild = addon upgrade). User collection data
-# under /data/User\ 1/ is untouched.
+# under /data/${ANKI_PROFILE}/ is untouched.
 rm -rf "${ADDON_DST}"
 mkdir -p "${ADDON_DST}"
 cp -r "${ADDON_SRC}/." "${ADDON_DST}/"
@@ -53,4 +54,12 @@ done
 # Trap signals so we can exit cleanly when the container is stopped
 trap 'kill -TERM "$XVFB_PID" 2>/dev/null; exit 0' TERM INT
 
-exec "$@"
+# Resolve command: if the caller passed a CMD override, honor it verbatim.
+# Otherwise launch Anki against the resolved profile. Profile is created
+# implicitly by Anki on first start if the directory doesn't exist.
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+else
+  echo "entrypoint: launching Anki with profile '${ANKI_PROFILE}'"
+  exec anki -b "${ANKI_BASE}" -l en -p "${ANKI_PROFILE}"
+fi

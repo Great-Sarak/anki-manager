@@ -131,6 +131,14 @@ elif [[ -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; then
   echo "      $DATA_DIR is non-empty; not overwriting."
 fi
 
+# Legacy profile rename: "User 1" -> "_anki_skill_testrun".
+# Only renames if (a) the legacy dir exists, (b) the new dir does NOT exist.
+# Skipping cases preserve any in-progress manual migration.
+if [[ -d "$DATA_DIR/User 1" && ! -d "$DATA_DIR/_anki_skill_testrun" ]]; then
+  echo "      Renaming legacy profile 'User 1' -> '_anki_skill_testrun'..."
+  mv "$DATA_DIR/User 1" "$DATA_DIR/_anki_skill_testrun"
+fi
+
 if [[ -f "$ENV_FILE" ]]; then
   echo "      $ENV_FILE already exists; not overwriting."
 elif [[ -f "$SEED_ENV" ]]; then
@@ -138,8 +146,13 @@ elif [[ -f "$SEED_ENV" ]]; then
   install -m 600 "$SEED_ENV" "$ENV_FILE"
 else
   echo "      WARNING: no seed .env to migrate. Create $ENV_FILE manually:"
-  echo "        echo 'ANKIWEB_USERNAME=...' | sudo tee $ENV_FILE"
-  echo "        echo 'ANKIWEB_PASSWORD=...' | sudo tee -a $ENV_FILE"
+  echo "        # Default profile (omit to use _anki_skill_testrun):"
+  echo "        echo 'KRYSHANTI_ANKI_DEFAULT_PROFILE=_anki_skill_testrun' | sudo tee $ENV_FILE"
+  echo "        # Per-profile credentials (preferred):"
+  echo "        echo 'ANKIWEB_USERNAME__anki_skill_testrun=...' | sudo tee -a $ENV_FILE"
+  echo "        echo 'ANKIWEB_PASSWORD__anki_skill_testrun=...' | sudo tee -a $ENV_FILE"
+  echo "        # Legacy unscoped ANKIWEB_USERNAME/PASSWORD form is still honored"
+  echo "        # for one release cycle as a fallback."
   echo "        sudo chmod 600 $ENV_FILE; sudo chown $ANKI_USER:$ANKI_USER $ENV_FILE"
 fi
 
