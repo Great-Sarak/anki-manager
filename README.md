@@ -128,6 +128,32 @@ Without `<new>`, attempting to write to a deck that isn't already in
 the agent's effective allowlist raises `DeckNotAllowedError` — fail
 closed; a missing allowlist file raises `AllowlistError`.
 
+### Profile vs. agent identity
+
+The kryshanti-anki container loads exactly one Anki **profile** at a
+time (selected via `KRYSHANTI_ANKI_DEFAULT_PROFILE`; see
+[`ops/container/README.md`](ops/container/README.md)). The allowlist's
+**agent identity** is a separate axis. Don't confuse them:
+
+| Axis | What it picks | Driven by | Where it's checked |
+|---|---|---|---|
+| **Profile** | Which `collection.anki2` is loaded — *whose collection* AnkiConnect serves. | `KRYSHANTI_ANKI_DEFAULT_PROFILE` env var at container start. | Anki Desktop's `-p` flag. |
+| **Agent identity** | Which `[Section]` of `allowlist.toml` resolves — *what an agent is permitted to write*. | The invoking process's Linux UID, matched against `aliases` lists. | `Allowlist.resolve_agent()`. |
+
+A literal coincidence: the user `sorotassu` is both a Linux username
+(listed as an alias under `[Myrzka]` in the example) and the name of
+the Anki profile that holds their real collection. These are
+independent. The allowlist doesn't know or care which profile is loaded
+— a Khezzura process calling into AnkiConnect against the `sorotassu`
+profile still resolves to the `[Khezzura]` agent section (or no section,
+if Khezzura's aliases don't claim that Linux user), not Myrzka's.
+
+This separation is intentional. Profiles partition *whose collection*;
+the allowlist partitions *what an agent can do inside that collection*.
+Both mechanisms must fail closed independently for the safety property
+to hold. Pinned by `TestProfileVsAgentIdentity` in
+`tests/test_allowlist.py`.
+
 ## Stable GUIDs
 
 Every agent-added note is tagged with a deterministic identifier of the form
