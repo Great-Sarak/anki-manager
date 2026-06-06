@@ -100,19 +100,77 @@ note, use `update-note --stable-guid ...` with the original GUID.
 
 ## Python API
 
+`anki-manager` is also usable as a Python library — the CLI is a thin dispatch wrapper over the same `AnkiManager` class, so library callers get the same verification (allowlist enforcement, live schema check, stable-GUID handling, backup-on-write, writer lock).
+
+### Quick start
+
 ```python
 from anki_manager import AnkiManager
 
 mgr = AnkiManager()
 mgr.ensure_running()
 
-models = mgr.list_models()      # live; never cached
-note_id = mgr.add_note(
-    "Myrzka::Daily", "Myrzka Basic",
+models = mgr.list_models()      # {model_name: [field_names]} — live, never cached
+
+add = mgr.add_note(
+    deck="Myrzka::Daily", model="Myrzka Basic",
     fields={"Front": "Q", "Back": "A", "Source": "...", "Tags": ""},
 )
+# → AddResult(note_id=..., stable_guid="anki-manager::...", dry_run=False)
+
+upsert = mgr.upsert_note(
+    deck="Myrzka::Daily", model="Myrzka Basic",
+    fields={"Front": "Q", "Back": "A revised answer", "Source": "...", "Tags": ""},
+)
+# → UpsertResult(note_id=..., stable_guid="...", created=False, dry_run=False)
+
 mgr.sync()
 ```
+
+### Public surface
+
+Everything in `anki_manager.__all__` is supported and follows semver. Anything not in `__all__` is internal — may change without notice.
+
+| Type | Purpose |
+|---|---|
+| `AnkiManager` | the top-level facade — instantiate once per process |
+| `AddResult`, `UpsertResult` | typed return values for `add_note` / `upsert_note` |
+| `Config` | optional construction-time tuning (host, port, timeouts, lock path, auto_backup) |
+| `Status` | snapshot returned by `mgr.status()` |
+| `Lifecycle`, `Allowlist`, `AgentEntry` | injectable for testing |
+| `AnkiManagerError`, `InvalidNoteError`, `NoteExistsError`, `NoteNotFoundError`, `DeckNotAllowedError`, `AllowlistError`, `LifecycleError`, `NotReadyError`, `PermissionsHelperError`, `LockTimeoutError` | the exception hierarchy — all derive from `AnkiManagerError` (except `LockTimeoutError`, which is unrelated to domain errors) |
+| `compute_guid`, `GUID_NAMESPACE`, `GUID_TAG_PREFIX`, `DRY_RUN_NOTE_ID` | constants and helpers for callers that need to derive GUIDs themselves |
+| `file_lock`, `NEW_SENTINEL` | low-level helpers |
+
+### Stability contract
+
+- **Public** (`__all__`): the methods and types above. Removed or signature-changed methods will go through a deprecation cycle of at least one minor release.
+- **Internal** (anything else, including private attrs and modules): may change at any time. If you need something not in `__all__`, file an issue requesting it be promoted.
+
+### Verification parity with the CLI
+
+Every check the CLI runs lives in the `AnkiManager` class itself, not in CLI dispatch:
+
+| Check | Where |
+|---|---|
+| Allowlist enforcement | `AnkiManager._require_allowed()` invoked by `add_deck`, `add_note`, `upsert_note` |
+| Live schema validation | `AnkiManager._validate_fields()` invoked by `add_note`, `upsert_note` |
+| Stable GUID derivation + collision check | `compute_guid()` + `find_by_guid()` invoked by all three write paths |
+| Auto-backup before first write | `_auto_backup_if_needed()` invoked by all three write paths |
+| Cross-process writer lock | `_writer_lock()` held across lookup+write window |
+| Lifecycle readiness gate | `ensure_running()` callable; AnkiConnect calls fail clearly if the unit isn't up |
+
+So `mgr.add_note(...)` and `anki-manager add-note ...` produce identical pre-write state. Library callers can rely on this.
+
+### Escape hatch
+
+For AnkiConnect actions not in the typed surface (e.g. `changeDeck`, `gui*`, model creation):
+
+```python
+result = mgr.call("createModel", modelName="...", inOrderFields=[...], cardTemplates=[...], isCloze=False)
+```
+
+`call(action, **params)` is a generic passthrough to anki-rpc. No allowlist enforcement, no schema validation — caller's responsibility.
 
 ## Architecture
 
