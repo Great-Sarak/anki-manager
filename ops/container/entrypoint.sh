@@ -54,9 +54,16 @@ done
 # Trap signals so we can exit cleanly when the container is stopped
 trap 'kill -TERM "$XVFB_PID" 2>/dev/null; exit 0' TERM INT
 
+# Pre-create the resolved profile directory. Anki Desktop's `-p <name>`
+# does NOT create a missing profile: it silently falls back to the first
+# existing profile (typically "User 1"), which silently routes writes to
+# the wrong collection. Creating the dir here makes Anki initialize the
+# profile inside it (prefs21.db, collection.anki2, etc.) on first launch.
+# mkdir -p is a no-op when the profile already exists.
+mkdir -p "${ANKI_BASE}/${ANKI_PROFILE}"
+
 # Resolve command: if the caller passed a CMD override, honor it verbatim.
-# Otherwise launch Anki against the resolved profile. Profile is created
-# implicitly by Anki on first start if the directory doesn't exist.
+# Otherwise launch Anki against the resolved profile.
 if [ "$#" -gt 0 ]; then
   exec "$@"
 else
