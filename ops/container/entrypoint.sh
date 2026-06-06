@@ -55,12 +55,69 @@ done
 trap 'kill -TERM "$XVFB_PID" 2>/dev/null; exit 0' TERM INT
 
 # Pre-create the resolved profile directory. Anki Desktop's `-p <name>`
-# does NOT create a missing profile: it silently falls back to the first
-# existing profile (typically "User 1"), which silently routes writes to
-# the wrong collection. Creating the dir here makes Anki initialize the
-# profile inside it (prefs21.db, collection.anki2, etc.) on first launch.
-# mkdir -p is a no-op when the profile already exists.
+# does NOT create a missing profile: when prefs21.db has other profiles
+# registered, Anki silently falls back to the first existing one
+# (typically "User 1") instead of creating the requested one. Creating
+# the dir is necessary for Anki to write collection state into it, but
+# not sufficient on its own (see profile registration below).
 mkdir -p "${ANKI_BASE}/${ANKI_PROFILE}"
+
+# Register the profile in prefs21.db if it isn't already.
+#
+# Anki's ProfileManager tracks profiles as rows in prefs21.db.profiles
+# (one row per profile, columns: name, data) where `data` is a pickled
+# Python dict of profile settings. If the target profile isn't in this
+# table when Anki starts with `-p <name>`, Anki silently loads whichever
+# profile IS registered first instead — without warning, without log.
+#
+# We register the target profile by cloning any existing user profile's
+# dict as a template and stripping out sync state (so SeedLogin can
+# populate fresh credentials). Edge cases handled inline:
+#   - prefs21.db missing → skip (first launch; Anki creates DB + profile
+#     itself when there are zero registered profiles to fall back to)
+#   - profile already registered → skip
+#   - no template profile to clone → skip (no fallback exists; Anki
+#     creates the requested profile)
+python3 - "${ANKI_BASE}" "${ANKI_PROFILE}" <<'PYEOF'
+import os
+import pickle
+import sqlite3
+import sys
+
+base, profile = sys.argv[1], sys.argv[2]
+db = os.path.join(base, "prefs21.db")
+
+if not os.path.exists(db):
+    sys.exit(0)
+
+con = sqlite3.connect(db, isolation_level=None)
+try:
+    cur = con.cursor()
+    tables = {r[0] for r in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}
+    if "profiles" not in tables:
+        sys.exit(0)
+    if cur.execute(
+        "SELECT 1 FROM profiles WHERE name=?", (profile,)
+    ).fetchone():
+        sys.exit(0)
+    templ_row = cur.execute(
+        "SELECT data FROM profiles WHERE name != '_global' LIMIT 1"
+    ).fetchone()
+    if not templ_row:
+        sys.exit(0)
+    d = pickle.loads(templ_row[0])
+    for key in ("syncKey", "syncUser", "currentSyncUrl", "hostNum"):
+        d.pop(key, None)
+    cur.execute(
+        "INSERT INTO profiles (name, data) VALUES (?, ?)",
+        (profile, pickle.dumps(d, protocol=4)),
+    )
+    print(f"entrypoint: registered profile {profile!r} in prefs21.db")
+finally:
+    con.close()
+PYEOF
 
 # Resolve command: if the caller passed a CMD override, honor it verbatim.
 # Otherwise launch Anki against the resolved profile.
