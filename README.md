@@ -10,7 +10,7 @@ Wraps [`anki-rpc`](https://github.com/Great-Sarak/anki-rpc) (Layer 1) with:
 
 ## Host prerequisites
 
-The kryshanti-anki systemd unit must be installed (done once-off via the `host-setup.sh` script in the [myrzka workspace](https://github.com/Great-Sarak/myrzka)'s `spikes/anki-docker/`). The invoking user must be in the `kryshanti-anki-users` group.
+The kryshanti-anki systemd unit must be installed (done once-off via the `host-setup.sh` script in [`ops/container/`](ops/container/README.md)). The invoking user must be in the `kryshanti-anki-users` group.
 
 ## Install
 

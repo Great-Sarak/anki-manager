@@ -1,0 +1,123 @@
+--- a/plugin/__init__.py
++++ b/plugin/__init__.py
+@@ -512,6 +512,33 @@
+ 
+ 
+     @util.api()
++    def forceUpload(self):
++        self._fullSync(upload=True)
++
++
++    @util.api()
++    def forceDownload(self):
++        self._fullSync(upload=False)
++
++
++    def _fullSync(self, upload):
++        mw = self.window()
++        auth = mw.pm.sync_auth()
++        if not auth:
++            action = "forceUpload" if upload else "forceDownload"
++            raise Exception(f"{action}: auth not configured")
++        aqt.gui_hooks.collection_will_temporarily_close(mw.col)
++        if not upload:
++            mw.create_backup_now()
++        mw.col.close_for_full_sync()
++        try:
++            mw.col.full_upload_or_download(auth=auth, server_usn=None, upload=upload)
++        finally:
++            mw.reopen(after_full_sync=True)
++            mw.reset()
++
++
++    @util.api()
+     def multi(self, actions):
+         return list(map(self.handler, actions))
+ 
+--- a/README.md
++++ b/README.md
+@@ -2196,6 +2196,58 @@
+     ```
+     </details>
+ 
++#### `forceUpload`
++
++*   Uploads the local collection to AnkiWeb, overwriting the remote side. Equivalent to choosing *Upload to AnkiWeb* in the desktop sync conflict dialog. Required when the local and remote collections have diverged enough that `sync` is refused (`FULL_SYNC` required, status `4` of `SyncCollectionResponse.ChangesRequired`). The collection is closed for the duration of the transfer and reopened on completion; this call blocks until the transfer finishes.
++
++    <details>
++    <summary><i>Sample request:</i></summary>
++
++    ```json
++    {
++        "action": "forceUpload",
++        "version": 6
++    }
++    ```
++    </details>
++
++    <details>
++    <summary><i>Sample result:</i></summary>
++
++    ```json
++    {
++        "result": null,
++        "error": null
++    }
++    ```
++    </details>
++
++#### `forceDownload`
++
++*   Downloads the AnkiWeb collection, overwriting the local side. Equivalent to choosing *Download from AnkiWeb* in the desktop sync conflict dialog. A backup of the local collection is taken before it is replaced, matching the desktop behavior. The collection is closed for the duration of the transfer and reopened on completion; this call blocks until the transfer finishes.
++
++    <details>
++    <summary><i>Sample request:</i></summary>
++
++    ```json
++    {
++        "action": "forceDownload",
++        "version": 6
++    }
++    ```
++    </details>
++
++    <details>
++    <summary><i>Sample result:</i></summary>
++
++    ```json
++    {
++        "result": null,
++        "error": null
++    }
++    ```
++    </details>
++
+ #### `getProfiles`
+ 
+ *   Retrieve the list of profiles.
+--- a/tests/test_misc.py
++++ b/tests/test_misc.py
+@@ -46,6 +46,23 @@
+         ac.loadProfile(name="test_user")
+ 
+ 
++# The success path for forceUpload / forceDownload requires a reachable
++# AnkiWeb (or compatible sync server) and is not exercised in CI for the
++# same reason `sync` is not. The error path — auth not configured — is
++# covered here; the success path is covered by integration tests that run
++# against a throwaway AnkiWeb account.
++class TestForceSync:
++    def test_forceUpload_requires_auth(self, setup, monkeypatch):
++        monkeypatch.setattr(aqt.mw.pm, "sync_auth", lambda: None)
++        with pytest.raises(Exception, match="forceUpload: auth not configured"):
++            ac.forceUpload()
++
++    def test_forceDownload_requires_auth(self, setup, monkeypatch):
++        monkeypatch.setattr(aqt.mw.pm, "sync_auth", lambda: None)
++        with pytest.raises(Exception, match="forceDownload: auth not configured"):
++            ac.forceDownload()
++
++
+ class TestExportImport:
+     # since Anki 2.1.50, exporting media for some wild reason
+     # will change the current working directory, which then gets removed.
