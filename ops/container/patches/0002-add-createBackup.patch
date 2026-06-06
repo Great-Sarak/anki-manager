@@ -1,0 +1,67 @@
+--- a/plugin/__init__.py
++++ b/plugin/__init__.py
+@@ -499,6 +499,11 @@
+ 
+ 
+     @util.api()
++    def createBackup(self):
++        self.window().create_backup_now()
++
++
++    @util.api()
+     def sync(self):
+         mw = self.window()
+         auth = mw.pm.sync_auth()
+--- a/README.md
++++ b/README.md
+@@ -2170,6 +2170,32 @@
+     ```
+     </details>
+ 
++#### `createBackup`
++
++*   Creates a backup of the current collection in the user's configured backup folder, blocking until the backup completes. Equivalent to triggering the desktop UI's *Tools → Create Backup* menu item. The `force=True` semantics of `Collection.create_backup` are used, so the user's configured backup interval is bypassed; rotation of older backups still follows the user's *Daily / Weekly / Monthly backups to keep* preferences.
++
++    <details>
++    <summary><i>Sample request:</i></summary>
++
++    ```json
++    {
++        "action": "createBackup",
++        "version": 6
++    }
++    ```
++    </details>
++
++    <details>
++    <summary><i>Sample result:</i></summary>
++
++    ```json
++    {
++        "result": null,
++        "error": null
++    }
++    ```
++    </details>
++
+ #### `sync`
+ 
+ *   Synchronizes the local Anki collections with AnkiWeb.
+--- a/tests/test_misc.py
++++ b/tests/test_misc.py
+@@ -46,6 +46,15 @@
+         ac.loadProfile(name="test_user")
+ 
+ 
++class TestCreateBackup:
++    def test_createBackup_writes_a_file_to_the_backup_folder(self, setup):
++        backup_dir = aqt.mw.pm.backupFolder()
++        before = set(os.listdir(backup_dir)) if os.path.isdir(backup_dir) else set()
++        ac.createBackup()
++        after = set(os.listdir(backup_dir))
++        assert after - before, f"createBackup did not create a new file in {backup_dir}"
++
++
+ class TestExportImport:
+     # since Anki 2.1.50, exporting media for some wild reason
+     # will change the current working directory, which then gets removed.
