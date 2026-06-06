@@ -139,3 +139,79 @@ class TestHasNewCapability:
     def test_no_agent(self):
         al = Allowlist(universal=(), agents={})
         assert al.has_new_capability(None) is False
+
+
+class TestProfileVsAgentIdentity:
+    """Pin: the allowlist resolver depends on Linux UID, not Anki profile.
+
+    The literal Anki profile named "sorotassu" introduced in #8 shares its
+    name with a Linux-user alias under [Myrzka]. These are independent:
+    a Khezzura process can call into the container with the "sorotassu"
+    profile loaded, and the allowlist must still resolve to [Khezzura]
+    (or no section, if Khezzura's aliases don't claim that Linux user).
+
+    See module docstring for the long explanation. These tests guard
+    against future code that conflates the two.
+    """
+
+    @pytest.fixture
+    def al(self, tmp_path):
+        return Allowlist.load(_write(tmp_path, """
+universal = []
+
+[Myrzka]
+allowed = ["Myrzka::*", "<new>"]
+aliases = ["sorotassu"]
+
+[Khezzura]
+allowed = ["Khezzura::*", "<new>"]
+aliases = ["khezzura-user"]
+"""))
+
+    def test_sorotassu_linux_user_resolves_to_myrzka(self, al):
+        agent = al.resolve_agent(linux_user="sorotassu")
+        assert agent is not None
+        assert agent.name == "Myrzka"
+
+    def test_khezzura_user_resolves_to_khezzura_even_with_sorotassu_alias_nearby(self, al):
+        # The fact that "sorotassu" appears as an alias under [Myrzka]
+        # doesn't taint Khezzura's resolution. Different Linux user,
+        # different agent.
+        agent = al.resolve_agent(linux_user="khezzura-user")
+        assert agent is not None
+        assert agent.name == "Khezzura"
+
+    def test_khezzura_can_write_khezzura_decks_against_any_profile(self, al):
+        # The profile axis is invisible to allowlist resolution; deck
+        # matching only depends on the resolved agent's patterns.
+        agent = al.resolve_agent(linux_user="khezzura-user")
+        assert al.matches("Khezzura::Cards", agent) is True
+        assert al.matches("Myrzka::Octopus", agent) is False
+
+    def test_khezzura_cannot_write_myrzka_decks_via_sorotassu_alias(self, al):
+        # Even though "sorotassu" is listed under [Myrzka], that doesn't
+        # grant Khezzura any Myrzka access. Only the Linux UID matters.
+        agent = al.resolve_agent(linux_user="khezzura-user")
+        assert agent.name == "Khezzura"
+        assert al.matches("Myrzka::Octopus", agent) is False
+        assert al.matches("Myrzka", agent) is False
+
+    def test_unknown_linux_user_gets_no_agent(self, al):
+        # A Linux user not claimed by any aliases list (e.g. a profile
+        # name that isn't also an alias) resolves to None — universal
+        # patterns only.
+        agent = al.resolve_agent(linux_user="some-unknown-user")
+        assert agent is None
+
+    def test_anki_profile_literal_not_an_alias_doesnt_match(self, al):
+        # The point: even though we have a profile called "sorotassu"
+        # at the Anki layer, that's invisible to allowlist resolution.
+        # Only the explicit `aliases = ["sorotassu"]` entry matters,
+        # and only as a Linux-user → agent map.
+        # This is checked by: the resolver takes a linux_user string and
+        # doesn't look at any profile-related state. We verify by
+        # observation — no profile parameter exists on resolve_agent.
+        import inspect
+        sig = inspect.signature(al.resolve_agent)
+        assert "profile" not in sig.parameters
+        assert "linux_user" in sig.parameters

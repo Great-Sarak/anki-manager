@@ -18,6 +18,22 @@ section's `aliases` list.  A match resolves the user to that agent
 section; multiple matches are ambiguous and rejected.  No match means
 the user has no agent identity and only `universal` patterns apply.
 
+The alias mechanism is purely **agent-side** — it maps a Linux user to
+an agent identity (which determines the deck patterns).  It has nothing
+to do with which Anki profile is loaded in the container.  Profile is
+a separate axis: it determines *whose collection* AnkiConnect serves
+(see `KRYSHANTI_ANKI_DEFAULT_PROFILE`), while the allowlist determines
+*what an agent is permitted to write to* inside that collection.
+
+Concretely: if Linux user `sorotassu` is listed as an alias under
+`[Myrzka]`, that grants the Myrzka rules to processes running as the
+`sorotassu` UID — regardless of whether the container is currently
+loading a profile called `sorotassu`, `_anki_skill_testrun`, or
+anything else.  A *different* Linux user (e.g. `khezzura-user`) calling
+into AnkiConnect against the `sorotassu` profile resolves to the
+`[Khezzura]` agent section (or no section at all if Khezzura's
+aliases don't list them), not Myrzka's.
+
 The literal sentinel `<new>` is not a pattern — it's a capability flag
 indicating the agent may extend its own allowed list (via the
 `grant-deck` helper) when creating a new deck.  Without `<new>`, the
