@@ -35,6 +35,30 @@ systemctl status kryshanti-anki
 
 This is what `anki-manager` drives.
 
+## Profiles
+
+The container loads one Anki profile per launch. The profile is selected
+by the `KRYSHANTI_ANKI_DEFAULT_PROFILE` env var (forwarded via `--env-file`
+from `/var/lib/kryshanti-anki/anki.env`); default is `_anki_skill_testrun`.
+
+Profile directories live under the bind-mounted data dir as
+`/var/lib/kryshanti-anki/data/<profile>/`. Switching profiles requires a
+container restart with a different env var; only one profile is live per
+container at a time.
+
+| Profile | Purpose | AnkiWeb account |
+|---|---|---|
+| `_anki_skill_testrun` | Integration tests (renamed from `User 1`) | Throwaway test account |
+| `sorotassu` | User's real collection (added in #8) | User's primary account |
+
+AnkiWeb credentials are per-profile, read by the SeedLogin addon from
+env vars named `ANKIWEB_USERNAME_<profile>` and
+`ANKIWEB_PASSWORD_<profile>` (note the underscore before the profile
+name when the profile itself starts with underscore — e.g.
+`ANKIWEB_USERNAME__anki_skill_testrun` for the test profile). The
+unscoped legacy names `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` are
+honored as a fallback for one release cycle.
+
 ## Manual run (development of the AnkiConnect patch)
 
 For iterating on the AnkiConnect patch in `patches/` without the
