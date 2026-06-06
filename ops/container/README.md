@@ -59,6 +59,37 @@ name when the profile itself starts with underscore — e.g.
 unscoped legacy names `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` are
 honored as a fallback for one release cycle.
 
+### Bootstrap a new profile from a `.colpkg`
+
+```sh
+sudo ./bootstrap-profile.sh sorotassu \
+    --import /path/to/all_decks.colpkg \
+    --ankiweb-user sorotassu@example.com
+```
+
+Drives the new profile through AnkiConnect's `importPackage` action
+(driving Anki's real import path — not unzipping the `.colpkg` into the
+profile dir, which doesn't work because `.colpkg` stores media as
+numbered blobs that need translation through a JSON map). Flips
+`KRYSHANTI_ANKI_DEFAULT_PROFILE` in `anki.env`, restarts the unit, runs
+the import, verifies decks loaded, and (optionally) writes per-profile
+AnkiWeb credentials. The `.colpkg` is supplied at runtime; no sample
+collection lives in the repo.
+
+For non-interactive credential setup, point at a `chmod 600` password
+file:
+
+```sh
+sudo ./bootstrap-profile.sh sorotassu \
+    --import ./all_decks.colpkg \
+    --ankiweb-user sorotassu@example.com \
+    --ankiweb-pass-file ~/secrets/ankiweb.pass
+```
+
+First sync after bootstrap will be a FULL_DOWNLOAD reconciliation
+against AnkiWeb. See `--help` for `--force`, `--skip-credentials`, and
+other flags.
+
 ## Manual run (development of the AnkiConnect patch)
 
 For iterating on the AnkiConnect patch in `patches/` without the
