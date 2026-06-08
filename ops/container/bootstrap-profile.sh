@@ -49,15 +49,10 @@ set -euo pipefail
 read_default_profile() {
   # Echo current KRYSHANTI_ANKI_DEFAULT_PROFILE value from anki.env.
   # Empty string if the file doesn't exist or the var isn't set.
-  #
-  # Important: under `set -euo pipefail`, a pipeline like
-  # `grep ... | tail | sed` propagates grep's exit=1 (no match) and
-  # crashes the script. We grep-into-a-variable with `|| true` to
-  # tolerate the no-match case.
   [[ -f "$ENV_FILE" ]] || { echo ""; return; }
-  local line
-  line=$(grep -E '^KRYSHANTI_ANKI_DEFAULT_PROFILE=' "$ENV_FILE" | tail -1 || true)
-  echo "${line#KRYSHANTI_ANKI_DEFAULT_PROFILE=}"
+  grep -E '^KRYSHANTI_ANKI_DEFAULT_PROFILE=' "$ENV_FILE" \
+    | tail -1 \
+    | sed -E 's/^KRYSHANTI_ANKI_DEFAULT_PROFILE=//'
 }
 
 set_default_profile() {
@@ -90,15 +85,13 @@ wait_for_ankiconnect() {
 
 # --- configuration -------------------------------------------------------- #
 
-# Config knobs. All overridable via env var so the bats suite can fixture them
-# (see ops/container/tests/). Production callers use the defaults.
-STATE_DIR="${STATE_DIR:-/var/lib/kryshanti-anki}"
-DATA_DIR="${DATA_DIR:-$STATE_DIR/data}"
-ENV_FILE="${ENV_FILE:-$STATE_DIR/anki.env}"
-IMPORT_DIR="${IMPORT_DIR:-$DATA_DIR/_import}"
-UNIT_NAME="${UNIT_NAME:-kryshanti-anki.service}"
-ANKICONNECT_URL="${ANKICONNECT_URL:-http://127.0.0.1:8765}"
-ANKICONNECT_WAIT_MAX="${ANKICONNECT_WAIT_MAX:-60}"
+STATE_DIR="/var/lib/kryshanti-anki"
+DATA_DIR="$STATE_DIR/data"
+ENV_FILE="$STATE_DIR/anki.env"
+IMPORT_DIR="$DATA_DIR/_import"
+UNIT_NAME="kryshanti-anki.service"
+ANKICONNECT_URL="http://127.0.0.1:8765"
+ANKICONNECT_WAIT_MAX=60   # seconds
 
 # --- arg parsing ---------------------------------------------------------- #
 
@@ -224,7 +217,7 @@ esac
 
 # --- preflight (privileged / state-dependent) ----------------------------- #
 
-if [[ $EUID -ne 0 && "${BOOTSTRAP_ALLOW_NON_ROOT:-0}" != "1" ]]; then
+if [[ $EUID -ne 0 ]]; then
   echo "Must run as root (sudo)." >&2
   exit 1
 fi
