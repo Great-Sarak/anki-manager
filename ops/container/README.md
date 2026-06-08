@@ -59,39 +59,29 @@ name when the profile itself starts with underscore — e.g.
 unscoped legacy names `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` are
 honored as a fallback for one release cycle.
 
-### Bootstrap a new profile from an `.apkg`
+### Bootstrap a new profile from a `.colpkg`
 
 ```sh
 sudo ./bootstrap-profile.sh sorotassu \
-    --import /path/to/all_decks.apkg \
+    --import /path/to/all_decks.colpkg \
     --ankiweb-user sorotassu@example.com
 ```
 
-Drives the new profile through AnkiConnect's `importPackage` action.
-Sequence: save the current `KRYSHANTI_ANKI_DEFAULT_PROFILE` value →
-stop the unit → set the env var to the bootstrap target → start the
-unit (the entrypoint creates the profile dir + registers it in
-`prefs21.db`) → wait for AnkiConnect → import the `.apkg` → verify
-deck count grew → optionally write per-profile AnkiWeb credentials →
-**restore the original `KRYSHANTI_ANKI_DEFAULT_PROFILE` value and
-restart** so the prior default profile loads again.
-
-Steady-state property: after the script exits (success or failure),
-`anki.env` is back to what it was before. The target profile is
-created and populated on disk regardless. The script installs an
-`EXIT` trap that restores the env file on unexpected failure.
-
-`.colpkg` is rejected with a workflow pointer at Anki Desktop's
-File → Export (→ "Anki Deck Package (.apkg)" → check "Include All
-Decks"). See [issue #19](https://github.com/Great-Sarak/anki-manager/issues/19)
-for why .colpkg can't be driven through the AnkiConnect handler model.
+Drives the new profile through AnkiConnect's `importPackage` action
+(driving Anki's real import path — not unzipping the `.colpkg` into the
+profile dir, which doesn't work because `.colpkg` stores media as
+numbered blobs that need translation through a JSON map). Flips
+`KRYSHANTI_ANKI_DEFAULT_PROFILE` in `anki.env`, restarts the unit, runs
+the import, verifies decks loaded, and (optionally) writes per-profile
+AnkiWeb credentials. The `.colpkg` is supplied at runtime; no sample
+collection lives in the repo.
 
 For non-interactive credential setup, point at a `chmod 600` password
 file:
 
 ```sh
 sudo ./bootstrap-profile.sh sorotassu \
-    --import ./all_decks.apkg \
+    --import ./all_decks.colpkg \
     --ankiweb-user sorotassu@example.com \
     --ankiweb-pass-file ~/secrets/ankiweb.pass
 ```
@@ -99,11 +89,6 @@ sudo ./bootstrap-profile.sh sorotassu \
 First sync after bootstrap will be a FULL_DOWNLOAD reconciliation
 against AnkiWeb. See `--help` for `--force`, `--skip-credentials`, and
 other flags.
-
-The script is covered by a [bats test suite](tests/README.md) — 30
-tests covering arg parsing, file-type validation, profile preflight,
-mocked AnkiConnect happy/failure paths, credential handling, and
-env-file save/restore. Run with `ops/container/tests/run.sh`.
 
 ## Manual run (development of the AnkiConnect patch)
 
