@@ -16,72 +16,23 @@
 # Decks" checked, and pass the resulting .apkg here.
 #
 # What it does:
-#   1. Reads the current KRYSHANTI_ANKI_DEFAULT_PROFILE value from
-#      /var/lib/kryshanti-anki/anki.env so it can be restored at the end.
-#   2. Stops the kryshanti-anki systemd unit.
-#   3. Sets KRYSHANTI_ANKI_DEFAULT_PROFILE=<target> in anki.env so the next
-#      container start creates and loads the bootstrap target profile.
-#   4. Starts the unit; waits for AnkiConnect to come up.
-#   5. Copies the .apkg into a bind-mount-accessible temp dir
+#   1. Stops the kryshanti-anki systemd unit.
+#   2. Flips KRYSHANTI_ANKI_DEFAULT_PROFILE in /var/lib/kryshanti-anki/anki.env
+#      to the new profile name so the next container start creates and loads it.
+#   3. Starts the unit; waits for AnkiConnect to come up.
+#   4. Copies the .apkg into a bind-mount-accessible temp dir
 #      (/var/lib/kryshanti-anki/data/_import/) and calls AnkiConnect's
 #      importPackage action.
-#   6. Verifies the import landed (deckNames returns a non-trivial list).
-#   7. Removes the temp .apkg.
-#   8. Optionally writes ANKIWEB_USERNAME_<profile> / ANKIWEB_PASSWORD_<profile>
+#   5. Verifies the import landed (deckNames returns a non-trivial list).
+#   6. Removes the temp .apkg.
+#   7. Optionally writes ANKIWEB_USERNAME_<profile> / ANKIWEB_PASSWORD_<profile>
 #      into anki.env (prompts for password or reads from --ankiweb-pass-file).
-#      Restarts the unit so SeedLogin picks up the new credentials.
-#   9. Restores the saved KRYSHANTI_ANKI_DEFAULT_PROFILE value (if it differs
-#      from the target) and restarts the unit so the prior default profile is
-#      loaded again.
-#
-# Steady-state property: after this script exits successfully or fails,
-# anki.env's KRYSHANTI_ANKI_DEFAULT_PROFILE value matches what it was before
-# the script started. The target profile is created and populated on disk
-# regardless. An EXIT trap restores the value if the script crashes mid-flight.
+#   8. Restarts the unit so SeedLogin picks up the new credentials on next
+#      profile load.
 #
 # The .apkg is NEVER stored in the repo. Always supplied at runtime.
 
 set -euo pipefail
-
-# --- helpers -------------------------------------------------------------- #
-# Defined up-front so the EXIT trap (installed mid-preflight) can call them.
-
-read_default_profile() {
-  # Echo current KRYSHANTI_ANKI_DEFAULT_PROFILE value from anki.env.
-  # Empty string if the file doesn't exist or the var isn't set.
-  [[ -f "$ENV_FILE" ]] || { echo ""; return; }
-  grep -E '^KRYSHANTI_ANKI_DEFAULT_PROFILE=' "$ENV_FILE" \
-    | tail -1 \
-    | sed -E 's/^KRYSHANTI_ANKI_DEFAULT_PROFILE=//'
-}
-
-set_default_profile() {
-  # Set KRYSHANTI_ANKI_DEFAULT_PROFILE in anki.env. Empty value removes the line.
-  local value="$1"
-  [[ -f "$ENV_FILE" ]] || install -m 600 /dev/null "$ENV_FILE"
-  if [[ -z "$value" ]]; then
-    sed -i -E '/^KRYSHANTI_ANKI_DEFAULT_PROFILE=/d' "$ENV_FILE"
-  elif grep -q '^KRYSHANTI_ANKI_DEFAULT_PROFILE=' "$ENV_FILE"; then
-    sed -i -E "s|^KRYSHANTI_ANKI_DEFAULT_PROFILE=.*|KRYSHANTI_ANKI_DEFAULT_PROFILE=$value|" "$ENV_FILE"
-  else
-    echo "KRYSHANTI_ANKI_DEFAULT_PROFILE=$value" >> "$ENV_FILE"
-  fi
-}
-
-wait_for_ankiconnect() {
-  # Poll AnkiConnect's version endpoint until it answers or the timeout hits.
-  # Returns 0 on connect, 1 on timeout.
-  local max="${1:-$ANKICONNECT_WAIT_MAX}"
-  local deadline=$(( $(date +%s) + max ))
-  while (( $(date +%s) < deadline )); do
-    if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
-          -d '{"action":"version","version":6}' 2>/dev/null; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
 
 # --- configuration -------------------------------------------------------- #
 
@@ -260,52 +211,48 @@ if [[ $SKIP_CREDS -ne 1 && -n "$ANKIWEB_USER" ]]; then
   fi
 fi
 
-# --- save original default profile + install restore trap ---------------- #
-
-ORIGINAL_DEFAULT_PROFILE="$(read_default_profile)"
-SCRIPT_SUCCESS=0
-
-on_exit() {
-  local rc=$?
-  if [[ $SCRIPT_SUCCESS -eq 1 ]]; then
-    return 0
-  fi
-  # Failure path: restore env file to pre-bootstrap state.
-  # Don't restart the unit — we don't know what state it's in and a
-  # restart could mask the failure or compound it. Operator decides.
-  if [[ "$(read_default_profile)" != "$ORIGINAL_DEFAULT_PROFILE" ]]; then
-    echo "" >&2
-    echo "FAILURE (exit $rc): restoring KRYSHANTI_ANKI_DEFAULT_PROFILE to '${ORIGINAL_DEFAULT_PROFILE:-<unset>}' in $ENV_FILE." >&2
-    set_default_profile "$ORIGINAL_DEFAULT_PROFILE" || true
-    echo "         Unit left in current state; inspect via 'journalctl -u $UNIT_NAME' and restart when ready." >&2
-  fi
-}
-trap on_exit EXIT
-
 echo "=== bootstrap-profile.sh ==="
-echo "  profile:        $PROFILE"
-echo "  import:         $IMPORT_PATH"
-echo "  ankiweb user:   ${ANKIWEB_USER:-<skipped>}"
-echo "  original default: ${ORIGINAL_DEFAULT_PROFILE:-<unset>}"
+echo "  profile:      $PROFILE"
+echo "  import:       $IMPORT_PATH"
+echo "  ankiweb user: ${ANKIWEB_USER:-<skipped>}"
 echo
 
 # --- 1. stop unit --------------------------------------------------------- #
 
-echo "[1/9] Stopping $UNIT_NAME (if running)..."
+echo "[1/7] Stopping $UNIT_NAME (if running)..."
 systemctl stop "$UNIT_NAME" 2>/dev/null || true
 
-# --- 2. set default profile to bootstrap target --------------------------- #
+# --- 2. flip default profile in anki.env --------------------------------- #
 
-echo "[2/9] Setting KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE in $ENV_FILE..."
-set_default_profile "$PROFILE"
+echo "[2/7] Setting KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE in $ENV_FILE..."
+if [[ ! -f "$ENV_FILE" ]]; then
+  install -m 600 /dev/null "$ENV_FILE"
+fi
+
+# Idempotent set: replace existing line or append.
+if grep -q "^KRYSHANTI_ANKI_DEFAULT_PROFILE=" "$ENV_FILE"; then
+  sed -i -E "s|^KRYSHANTI_ANKI_DEFAULT_PROFILE=.*|KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE|" "$ENV_FILE"
+else
+  echo "KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE" >> "$ENV_FILE"
+fi
 
 # --- 3. start unit + wait for AnkiConnect --------------------------------- #
 
-echo "[3/9] Starting $UNIT_NAME..."
+echo "[3/7] Starting $UNIT_NAME..."
 systemctl start "$UNIT_NAME"
 
 echo "      Waiting up to ${ANKICONNECT_WAIT_MAX}s for AnkiConnect on $ANKICONNECT_URL..."
-if ! wait_for_ankiconnect; then
+deadline=$(( $(date +%s) + ANKICONNECT_WAIT_MAX ))
+while (( $(date +%s) < deadline )); do
+  if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
+        -d '{"action":"version","version":6}' 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+
+if ! curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
+      -d '{"action":"version","version":6}' 2>/dev/null; then
   echo "      AnkiConnect didn't come up. Check 'journalctl -u $UNIT_NAME'." >&2
   exit 1
 fi
@@ -322,7 +269,7 @@ echo "      AnkiConnect up, profile=$ACTIVE."
 
 # --- 4. copy apkg into bind mount + importPackage ------------------------- #
 
-echo "[4/9] Importing $IMPORT_PATH..."
+echo "[4/7] Importing $IMPORT_PATH..."
 mkdir -p "$IMPORT_DIR"
 IMPORT_NAME="$(basename "$IMPORT_PATH")"
 IMPORT_DST="$IMPORT_DIR/$IMPORT_NAME"
@@ -353,7 +300,7 @@ echo "      Import returned: $IMPORT_RESULT"
 
 # --- 5. verify decks loaded ----------------------------------------------- #
 
-echo "[5/9] Verifying decks loaded..."
+echo "[5/7] Verifying decks loaded..."
 DECKS=$(curl -fsS -X POST "$ANKICONNECT_URL" \
   -d '{"action":"deckNames","version":6}' \
   | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]))')
@@ -368,14 +315,14 @@ echo "      $DECKS decks present."
 
 # --- 6. clean up temp apkg ----------------------------------------------- #
 
-echo "[6/9] Removing temp $IMPORT_DST..."
-rm -f "$IMPORT_DST"
+echo "[6/7] Removing temp $COLPKG_DST..."
+rm -f "$COLPKG_DST"
 rmdir "$IMPORT_DIR" 2>/dev/null || true
 
 # --- 7. credentials + restart -------------------------------------------- #
 
 if [[ $SKIP_CREDS -ne 1 && -n "$ANKIWEB_USER" ]]; then
-  echo "[7/9] Writing per-profile AnkiWeb credentials to $ENV_FILE..."
+  echo "[7/7] Writing per-profile AnkiWeb credentials to $ENV_FILE..."
   USER_KEY="ANKIWEB_USERNAME_$PROFILE"
   PASS_KEY="ANKIWEB_PASSWORD_$PROFILE"
 
@@ -410,42 +357,16 @@ PY
 
   echo "      Restarting $UNIT_NAME so SeedLogin can register the new account..."
   systemctl restart "$UNIT_NAME"
-  if ! wait_for_ankiconnect; then
-    echo "      AnkiConnect didn't come back after credential restart." >&2
-    exit 1
-  fi
-else
-  echo "[7/9] Credentials skipped (no --ankiweb-user given or --skip-credentials set)."
+  # Wait for AnkiConnect to come back.
+  deadline=$(( $(date +%s) + ANKICONNECT_WAIT_MAX ))
+  while (( $(date +%s) < deadline )); do
+    if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
+          -d '{"action":"version","version":6}' 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
 fi
-
-# --- 8. restore original default profile --------------------------------- #
-
-if [[ "$ORIGINAL_DEFAULT_PROFILE" == "$PROFILE" ]]; then
-  echo "[8/9] Original default == bootstrap target ('$PROFILE'); no restore needed."
-else
-  echo "[8/9] Restoring KRYSHANTI_ANKI_DEFAULT_PROFILE to '${ORIGINAL_DEFAULT_PROFILE:-<unset>}' in $ENV_FILE..."
-  set_default_profile "$ORIGINAL_DEFAULT_PROFILE"
-fi
-
-# --- 9. restart unit with restored default (skip if no-op) --------------- #
-
-if [[ "$ORIGINAL_DEFAULT_PROFILE" == "$PROFILE" ]]; then
-  echo "[9/9] Unit already loaded with target profile; no restart needed."
-else
-  echo "[9/9] Restarting $UNIT_NAME so the prior default profile is loaded..."
-  systemctl restart "$UNIT_NAME"
-  if ! wait_for_ankiconnect; then
-    echo "      AnkiConnect didn't come back after default-profile restart." >&2
-    echo "      anki.env has been restored; investigate the unit before further bootstraps." >&2
-    exit 1
-  fi
-  ACTIVE_AFTER=$(curl -fsS -X POST "$ANKICONNECT_URL" \
-                    -d '{"action":"getActiveProfile","version":6}' \
-                 | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"] or "")')
-  echo "      Unit back up; active profile=${ACTIVE_AFTER:-<unknown>}."
-fi
-
-SCRIPT_SUCCESS=1
 
 # --- done ---------------------------------------------------------------- #
 
