@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 #
 # bootstrap-profile.sh — create a new Anki profile inside the kryshanti-anki
-# container and seed it from a .colpkg backup.
+# container and seed it from an .apkg deck export.
 #
 # Run as root (sudo). Run once per user-collection profile being onboarded.
+#
+# Accepted import format: .apkg only.
+#
+# .colpkg (full-collection backup) is NOT accepted; see
+# https://github.com/Great-Sarak/anki-manager/issues/19 for the reasons
+# (the AnkiConnect handler model is fundamentally async-shape-mismatched
+# with .colpkg's collection-replacement lifecycle). To use a .colpkg
+# backup as the source: open it in Anki Desktop on the source machine,
+# then File > Export > "Anki Deck Package (.apkg)" with "Include All
+# Decks" checked, and pass the resulting .apkg here.
 #
 # What it does:
 #   1. Stops the kryshanti-anki systemd unit.
 #   2. Flips KRYSHANTI_ANKI_DEFAULT_PROFILE in /var/lib/kryshanti-anki/anki.env
 #      to the new profile name so the next container start creates and loads it.
 #   3. Starts the unit; waits for AnkiConnect to come up.
-#   4. Copies the .colpkg into a bind-mount-accessible temp dir
+#   4. Copies the .apkg into a bind-mount-accessible temp dir
 #      (/var/lib/kryshanti-anki/data/_import/) and calls AnkiConnect's
 #      importPackage action.
 #   5. Verifies the import landed (deckNames returns a non-trivial list).
-#   6. Removes the temp .colpkg.
+#   6. Removes the temp .apkg.
 #   7. Optionally writes ANKIWEB_USERNAME_<profile> / ANKIWEB_PASSWORD_<profile>
 #      into anki.env (prompts for password or reads from --ankiweb-pass-file).
 #   8. Restarts the unit so SeedLogin picks up the new credentials on next
 #      profile load.
 #
-# The .colpkg is NEVER stored in the repo. Always supplied at runtime.
+# The .apkg is NEVER stored in the repo. Always supplied at runtime.
 
 set -euo pipefail
 
@@ -40,7 +50,7 @@ usage() {
   cat <<'USAGE' >&2
 Usage:
   bootstrap-profile.sh <profile-name>
-    --import <colpkg-path>
+    --import <apkg-path>
     [--ankiweb-user <email>]
     [--ankiweb-pass-file <path>]
     [--force]
@@ -48,7 +58,10 @@ Usage:
 
 Required:
   <profile-name>             Name of the Anki profile to create (e.g. sorotassu).
-  --import <path>            Path to the .colpkg backup to import.
+  --import <path>            Path to the .apkg deck export to import.
+                             .colpkg is NOT accepted; see
+                             github.com/Great-Sarak/anki-manager/issues/19
+                             for the workflow to convert .colpkg -> .apkg.
 
 Optional:
   --ankiweb-user <email>     AnkiWeb username. If set, you'll be prompted for
@@ -62,17 +75,17 @@ Optional:
 
 Examples:
   sudo ./bootstrap-profile.sh sorotassu \
-      --import ~/assets/all_decks.colpkg \
+      --import ~/assets/all_decks.apkg \
       --ankiweb-user sorotassu@example.com
 
   sudo ./bootstrap-profile.sh sorotassu \
-      --import ~/assets/all_decks.colpkg --skip-credentials
+      --import ~/assets/all_decks.apkg --skip-credentials
 USAGE
   exit 1
 }
 
 PROFILE=""
-COLPKG_PATH=""
+IMPORT_PATH=""
 ANKIWEB_USER=""
 ANKIWEB_PASS_FILE=""
 FORCE=0
@@ -80,7 +93,7 @@ SKIP_CREDS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --import)              COLPKG_PATH="${2:-}"; shift 2 ;;
+    --import)              IMPORT_PATH="${2:-}"; shift 2 ;;
     --ankiweb-user)        ANKIWEB_USER="${2:-}"; shift 2 ;;
     --ankiweb-pass-file)   ANKIWEB_PASS_FILE="${2:-}"; shift 2 ;;
     --force)               FORCE=1; shift ;;
@@ -100,17 +113,63 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$PROFILE" ]]      && { echo "Missing <profile-name>." >&2; usage; }
-[[ -z "$COLPKG_PATH" ]]  && { echo "Missing --import <colpkg-path>." >&2; usage; }
+[[ -z "$IMPORT_PATH" ]]  && { echo "Missing --import <apkg-path>." >&2; usage; }
 
-# --- preflight ------------------------------------------------------------ #
+# --- input validation (before privilege escalation check) ----------------- #
 
-if [[ $EUID -ne 0 ]]; then
-  echo "Must run as root (sudo)." >&2
+# Reserved profile prefixes that would collide with system dirs.
+case "$PROFILE" in
+  addons21|.*|_import) echo "Reserved profile name: $PROFILE" >&2; exit 1 ;;
+esac
+
+if [[ ! -f "$IMPORT_PATH" ]]; then
+  echo "Import file not found: $IMPORT_PATH" >&2
   exit 1
 fi
 
-if [[ ! -f "$COLPKG_PATH" ]]; then
-  echo "Colpkg not found: $COLPKG_PATH" >&2
+# File-type validation. .colpkg is explicitly rejected with the workflow
+# to convert it to .apkg, since AnkiConnect's import surface doesn't
+# cleanly handle .colpkg in headless containers (see issue #19).
+import_lower="${IMPORT_PATH,,}"
+case "$import_lower" in
+  *.apkg)
+    : # accepted
+    ;;
+  *.colpkg)
+    cat >&2 <<COLPKG_REJECT
+ERROR: .colpkg is not supported by this script.
+       Path: $IMPORT_PATH
+
+Background: AnkiConnect's importPackage action handles .apkg only.
+.colpkg uses a collection-replacement lifecycle (async, dialog-driven)
+that can't be cleanly driven through the synchronous AnkiConnect
+handler model. See Great-Sarak/anki-manager#19 for the full
+investigation and the three dead ends we explored.
+
+To convert .colpkg -> .apkg:
+  1. Open Anki Desktop on the source machine.
+  2. File > Export...
+  3. Export format: "Anki Deck Package (.apkg)"
+  4. Check "Include All Decks".
+  5. Save the .apkg, then re-run this script with --import <that-path>.
+
+If you actually need .colpkg support (i.e. you want collection-level
+state including review history that .apkg drops), Great-Sarak/anki-manager#19
+tracks the upstream AnkiConnect PR design that would be required.
+COLPKG_REJECT
+    exit 2
+    ;;
+  *)
+    echo "ERROR: Unrecognized import file extension. Expected .apkg." >&2
+    echo "       Path: $IMPORT_PATH" >&2
+    exit 2
+    ;;
+esac
+
+# --- preflight (privileged / state-dependent) ----------------------------- #
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Must run as root (sudo)." >&2
   exit 1
 fi
 
@@ -129,11 +188,6 @@ if [[ -d "$PROFILE_DIR" ]] && [[ -n "$(ls -A "$PROFILE_DIR" 2>/dev/null)" ]]; th
   echo "[!] --force: removing existing $PROFILE_DIR"
   rm -rf "$PROFILE_DIR"
 fi
-
-# Reject reserved profile prefixes that might collide with system dirs.
-case "$PROFILE" in
-  addons21|.*|_import) echo "Reserved profile name: $PROFILE" >&2; exit 1 ;;
-esac
 
 # Resolve AnkiWeb credentials if requested.
 ANKIWEB_PASS=""
@@ -159,7 +213,7 @@ fi
 
 echo "=== bootstrap-profile.sh ==="
 echo "  profile:      $PROFILE"
-echo "  colpkg:       $COLPKG_PATH"
+echo "  import:       $IMPORT_PATH"
 echo "  ankiweb user: ${ANKIWEB_USER:-<skipped>}"
 echo
 
@@ -213,17 +267,17 @@ if [[ "$ACTIVE" != "$PROFILE" ]]; then
 fi
 echo "      AnkiConnect up, profile=$ACTIVE."
 
-# --- 4. copy colpkg into bind mount + importPackage ----------------------- #
+# --- 4. copy apkg into bind mount + importPackage ------------------------- #
 
-echo "[4/7] Importing $COLPKG_PATH..."
+echo "[4/7] Importing $IMPORT_PATH..."
 mkdir -p "$IMPORT_DIR"
-COLPKG_NAME="$(basename "$COLPKG_PATH")"
-COLPKG_DST="$IMPORT_DIR/$COLPKG_NAME"
-cp "$COLPKG_PATH" "$COLPKG_DST"
+IMPORT_NAME="$(basename "$IMPORT_PATH")"
+IMPORT_DST="$IMPORT_DIR/$IMPORT_NAME"
+cp "$IMPORT_PATH" "$IMPORT_DST"
 chown -R "$(stat -c '%U:%G' "$STATE_DIR")" "$IMPORT_DIR"
 
 # AnkiConnect sees /data/_import/<name> inside the container.
-CONTAINER_COLPKG_PATH="/data/_import/$COLPKG_NAME"
+CONTAINER_IMPORT_PATH="/data/_import/$IMPORT_NAME"
 
 # importPackage in AnkiConnect 25.x can take minutes for a large collection.
 echo "      Calling importPackage (may take several minutes for large collections)..."
@@ -233,7 +287,7 @@ import json
 print(json.dumps({
     'action': 'importPackage',
     'version': 6,
-    'params': {'path': '$CONTAINER_COLPKG_PATH'},
+    'params': {'path': '$CONTAINER_IMPORT_PATH'},
 }))
 ")")
 
@@ -259,7 +313,7 @@ if [[ "$DECKS" -lt 2 ]]; then
 fi
 echo "      $DECKS decks present."
 
-# --- 6. clean up temp colpkg --------------------------------------------- #
+# --- 6. clean up temp apkg ----------------------------------------------- #
 
 echo "[6/7] Removing temp $COLPKG_DST..."
 rm -f "$COLPKG_DST"
