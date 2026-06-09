@@ -50,15 +50,17 @@ set -euo pipefail
 
 # --- configuration -------------------------------------------------------- #
 
-STATE_DIR="/var/lib/kryshanti-anki"
-DATA_DIR="$STATE_DIR/data"
-ENV_FILE="$STATE_DIR/anki.env"
-IMPORT_DIR="$DATA_DIR/_import"
-UNIT_NAME="kryshanti-anki.service"
-ANKICONNECT_URL="http://127.0.0.1:8765"
-ANKICONNECT_WAIT_MAX=60                          # seconds
-IMAGE_TAG="kryshanti-anki:25.02.7"
-BOOTSTRAP_CONTAINER_NAME="kryshanti-anki-bootstrap"
+# Config knobs. All overridable via env var so the bats suite can fixture
+# them (see ops/container/tests/). Production callers use the defaults.
+STATE_DIR="${STATE_DIR:-/var/lib/kryshanti-anki}"
+DATA_DIR="${DATA_DIR:-$STATE_DIR/data}"
+ENV_FILE="${ENV_FILE:-$STATE_DIR/anki.env}"
+IMPORT_DIR="${IMPORT_DIR:-$DATA_DIR/_import}"
+UNIT_NAME="${UNIT_NAME:-kryshanti-anki.service}"
+ANKICONNECT_URL="${ANKICONNECT_URL:-http://127.0.0.1:8765}"
+ANKICONNECT_WAIT_MAX="${ANKICONNECT_WAIT_MAX:-60}"
+IMAGE_TAG="${IMAGE_TAG:-kryshanti-anki:25.02.7}"
+BOOTSTRAP_CONTAINER_NAME="${BOOTSTRAP_CONTAINER_NAME:-kryshanti-anki-bootstrap}"
 
 # --- arg parsing ---------------------------------------------------------- #
 
@@ -184,7 +186,7 @@ esac
 
 # --- preflight (privileged / state-dependent) ----------------------------- #
 
-if [[ $EUID -ne 0 ]]; then
+if [[ $EUID -ne 0 && "${BOOTSTRAP_ALLOW_NON_ROOT:-0}" != "1" ]]; then
   echo "Must run as root (sudo)." >&2
   exit 1
 fi

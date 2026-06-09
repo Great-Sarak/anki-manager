@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Mock systemctl for bats. Logs argv to SYSTEMCTL_LOG (if set);
+# SYSTEMCTL_BEHAVIOR controls exit code:
+#   ok | fail-start | fail-stop | fail-restart
+
+if [[ -n "${SYSTEMCTL_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+fi
+action="${1:-}"
+case "${SYSTEMCTL_BEHAVIOR:-ok}" in
+  ok) exit 0 ;;
+  fail-start)   [[ "$action" == "start" ]] && exit 1 ; exit 0 ;;
+  fail-stop)    [[ "$action" == "stop" ]] && exit 1 ; exit 0 ;;
+  fail-restart) [[ "$action" == "restart" ]] && exit 1 ; exit 0 ;;
+  *) echo "mock systemctl: unknown SYSTEMCTL_BEHAVIOR='${SYSTEMCTL_BEHAVIOR}'" >&2; exit 2 ;;
+esac
