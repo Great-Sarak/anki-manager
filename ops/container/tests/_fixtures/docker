@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Mock docker for bats.
+#
+# Logs argv to DOCKER_LOG (if set). Exit code controlled by DOCKER_BEHAVIOR:
+#   ok | fail-run | fail-stop
+#
+# For `docker cp`, no special handling — just exits 0.
+# For `docker run`, exits 0 (or 1 if fail-run) and prints a fake container id.
+# For `docker stop`, exits 0 (or 1 if fail-stop).
+
+if [[ -n "${DOCKER_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$DOCKER_LOG"
+fi
+subcmd="${1:-}"
+case "${DOCKER_BEHAVIOR:-ok}" in
+  ok) ;;
+  fail-run)  [[ "$subcmd" == "run" ]] && exit 1 ;;
+  fail-stop) [[ "$subcmd" == "stop" ]] && exit 1 ;;
+  *) echo "mock docker: unknown DOCKER_BEHAVIOR='${DOCKER_BEHAVIOR}'" >&2; exit 2 ;;
+esac
+
+# `docker run -d` should print a container id on stdout.
+case "$subcmd" in
+  run)
+    # Detect -d/--detach to mimic the behavior; emit a fake 64-char hex id.
+    for arg in "$@"; do
+      if [[ "$arg" == "-d" || "$arg" == "--detach" ]]; then
+        echo "deadbeefcafebabefeedfacebadc0ffee1234567890abcdef1234567890abcdef"
+        break
+      fi
+    done
+    ;;
+  stop|cp|ps|exec|logs|version|inspect) ;;
+  *) ;;
+esac
+exit 0
