@@ -22,7 +22,7 @@
 #   3. Starts the unit; waits for AnkiConnect to come up.
 #   4. Copies the .apkg into a bind-mount-accessible temp dir
 #      (/var/lib/kryshanti-anki/data/_import/) and calls AnkiConnect's
-#      importPackage action.
+#      importPackageWithLog action (added by patches/0003-fix-importPackage-anki25.patch).
 #   5. Verifies the import landed (deckNames returns a non-trivial list).
 #   6. Removes the temp .apkg.
 #   7. Optionally writes ANKIWEB_USERNAME_<profile> / ANKIWEB_PASSWORD_<profile>
@@ -267,7 +267,7 @@ if [[ "$ACTIVE" != "$PROFILE" ]]; then
 fi
 echo "      AnkiConnect up, profile=$ACTIVE."
 
-# --- 4. copy apkg into bind mount + importPackage ------------------------- #
+# --- 4. copy apkg into bind mount + importPackageWithLog ------------------ #
 
 echo "[4/7] Importing $IMPORT_PATH..."
 mkdir -p "$IMPORT_DIR"
@@ -279,13 +279,17 @@ chown -R "$(stat -c '%U:%G' "$STATE_DIR")" "$IMPORT_DIR"
 # AnkiConnect sees /data/_import/<name> inside the container.
 CONTAINER_IMPORT_PATH="/data/_import/$IMPORT_NAME"
 
-# importPackage in AnkiConnect 25.x can take minutes for a large collection.
-echo "      Calling importPackage (may take several minutes for large collections)..."
+# importPackageWithLog (added in patches/0003-fix-importPackage-anki25.patch)
+# returns a rich log summary so we can verify the import actually changed the
+# collection. The upstream importPackage action returns just true/false and
+# was silently no-op on Anki 25.x before the patch — see #19 for the full
+# investigation.
+echo "      Calling importPackageWithLog..."
 IMPORT_RESULT=$(curl -fsS --max-time 600 -X POST "$ANKICONNECT_URL" \
   -d "$(python3 -c "
 import json
 print(json.dumps({
-    'action': 'importPackage',
+    'action': 'importPackageWithLog',
     'version': 6,
     'params': {'path': '$CONTAINER_IMPORT_PATH'},
 }))
@@ -293,22 +297,23 @@ print(json.dumps({
 
 IMPORT_ERROR=$(echo "$IMPORT_RESULT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error") or "")')
 if [[ -n "$IMPORT_ERROR" ]]; then
-  echo "      importPackage failed: $IMPORT_ERROR" >&2
+  echo "      importPackageWithLog failed: $IMPORT_ERROR" >&2
   exit 1
 fi
-echo "      Import returned: $IMPORT_RESULT"
+echo "      Import log: $IMPORT_RESULT"
 
 # --- 5. verify decks loaded ----------------------------------------------- #
 
 echo "[5/7] Verifying decks loaded..."
-DECKS=$(curl -fsS -X POST "$ANKICONNECT_URL" \
-  -d '{"action":"deckNames","version":6}' \
-  | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]))')
+# importPackageWithLog returns deck_count_after in its log; use it directly
+# instead of a second deckNames call.
+DECKS=$(echo "$IMPORT_RESULT" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["deck_count_after"])')
 
 if [[ "$DECKS" -lt 2 ]]; then
   # Default profile has only "Default" deck.
   echo "      Only $DECKS deck(s) found after import; expected >1." >&2
-  echo "      Check /data/seedlogin.log and Anki logs in the container." >&2
+  echo "      Check Anki logs in the container." >&2
   exit 1
 fi
 echo "      $DECKS decks present."

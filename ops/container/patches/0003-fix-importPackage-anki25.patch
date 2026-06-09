@@ -1,0 +1,212 @@
+--- a/plugin/__init__.py
++++ b/plugin/__init__.py
+@@ -2220,8 +2220,27 @@
+         if collection is not None:
+             try:
+                 self.startEditing()
+-                importer = AnkiPackageImporter(collection, path)
+-                importer.run()
++                if hasattr(collection, 'import_anki_package'):
++                    # Anki 23.10+: the legacy anki.importing.AnkiPackageImporter
++                    # is a Rust no-op stub in modern Anki (it returns without
++                    # raising but doesn't actually import). Use the modern
++                    # collection-level API instead.
++                    from anki.collection import (
++                        ImportAnkiPackageRequest,
++                        ImportAnkiPackageOptions,
++                    )
++                    opts = ImportAnkiPackageOptions(
++                        merge_notetypes=False,
++                        update_notes=0,      # IMPORT_ANKI_PACKAGE_UPDATE_CONDITION_IF_NEWER
++                        update_notetypes=0,  # IMPORT_ANKI_PACKAGE_UPDATE_CONDITION_IF_NEWER
++                        with_scheduling=True,
++                        with_deck_configs=True,
++                    )
++                    req = ImportAnkiPackageRequest(package_path=path, options=opts)
++                    collection.import_anki_package(req)
++                else:
++                    importer = AnkiPackageImporter(collection, path)
++                    importer.run()
+             except:
+                 raise
+             else:
+@@ -2231,6 +2250,64 @@
+ 
+ 
+     @util.api()
++    def importPackageWithLog(self, path, mergeNotetypes=False, updateNotes='IF_NEWER',
++                              updateNotetypes='IF_NEWER', withScheduling=True,
++                              withDeckConfigs=True):
++        """Like importPackage but returns a rich import-log summary.
++
++        Requires Anki 23.10+ (uses col.import_anki_package). Returns a dict
++        with note counts and post-import deck count instead of a boolean,
++        so clients can verify the import actually changed the collection.
++
++        updateNotes / updateNotetypes accept: 'IF_NEWER', 'ALWAYS', 'NEVER'.
++        """
++        collection = self.collection()
++        if collection is None:
++            raise Exception('no collection loaded')
++        if not hasattr(collection, 'import_anki_package'):
++            raise Exception(
++                'importPackageWithLog requires Anki 23.10+; '
++                'use importPackage on older Anki versions'
++            )
++        from anki.collection import (
++            ImportAnkiPackageRequest,
++            ImportAnkiPackageOptions,
++        )
++        update_condition = {'IF_NEWER': 0, 'ALWAYS': 1, 'NEVER': 2}
++        if updateNotes not in update_condition:
++            raise Exception(
++                f"updateNotes must be one of {sorted(update_condition.keys())}; "
++                f"got {updateNotes!r}"
++            )
++        if updateNotetypes not in update_condition:
++            raise Exception(
++                f"updateNotetypes must be one of {sorted(update_condition.keys())}; "
++                f"got {updateNotetypes!r}"
++            )
++
++        self.startEditing()
++        opts = ImportAnkiPackageOptions(
++            merge_notetypes=mergeNotetypes,
++            update_notes=update_condition[updateNotes],
++            update_notetypes=update_condition[updateNotetypes],
++            with_scheduling=withScheduling,
++            with_deck_configs=withDeckConfigs,
++        )
++        req = ImportAnkiPackageRequest(package_path=path, options=opts)
++        result = collection.import_anki_package(req)
++
++        log = result.log if hasattr(result, 'log') else result
++        return {
++            'found_notes': getattr(log, 'found_notes', None),
++            'new': len(getattr(log, 'new', [])),
++            'updated': len(getattr(log, 'updated', [])),
++            'duplicate': len(getattr(log, 'duplicate', [])),
++            'conflicting': len(getattr(log, 'conflicting', [])),
++            'deck_count_after': len(collection.decks.all_names_and_ids()),
++        }
++
++
++    @util.api()
+     def apiReflect(self, scopes=None, actions=None):
+         if not isinstance(scopes, list):
+             raise Exception('scopes has invalid value')
+--- a/README.md
++++ b/README.md
+@@ -2444,6 +2444,12 @@
+ *   Imports a file in `.apkg` format into the collection. Returns `true` if successful or `false` otherwise.
+     Note that the file path is relative to Anki's collection.media folder, not to the client.
+ 
++    On Anki 23.10 and later, uses the modern `col.import_anki_package` API
++    internally (the legacy `anki.importing.AnkiPackageImporter` is a Rust no-op
++    stub on those versions and would silently report success without actually
++    importing). On older Anki versions, falls back to the legacy importer.
++    The action's wire contract (`true`/`false`/raise) is unchanged.
++
+     <details>
+     <summary><i>Sample request:</i></summary>
+ 
+@@ -2467,6 +2473,61 @@
+         "error": null
+     }
+     ```
++    </details>
++
++#### `importPackageWithLog`
++
++*   Like `importPackage` but returns a rich import-log summary instead of a boolean.
++    Useful for verifying the import actually changed the collection (counts of
++    new / updated / duplicate / conflicting notes, plus the post-import deck count).
++
++    Requires Anki 23.10+ (uses `col.import_anki_package`). Raises on older Anki
++    versions; use `importPackage` instead.
++
++    Parameters:
++    - `path` *(required)*: path to the .apkg file, as seen from Anki's process.
++    - `mergeNotetypes` *(default `false`)*: if true, merge matching notetypes
++      from the import into existing ones rather than creating duplicates.
++    - `updateNotes` *(default `"IF_NEWER"`)*: one of `"IF_NEWER"`, `"ALWAYS"`,
++      `"NEVER"`. Controls whether existing notes are updated from the import.
++    - `updateNotetypes` *(default `"IF_NEWER"`)*: same options as `updateNotes`,
++      applied to notetypes rather than notes.
++    - `withScheduling` *(default `true`)*: import scheduling state (review
++      history, intervals) from the package.
++    - `withDeckConfigs` *(default `true`)*: import deck configurations from
++      the package.
++
++    <details>
++    <summary><i>Sample request:</i></summary>
++
++    ```json
++    {
++        "action": "importPackageWithLog",
++        "version": 6,
++        "params": {
++            "path": "/data/Deck.apkg",
++            "updateNotes": "IF_NEWER"
++        }
++    }
++    ```
++    </details>
++
++    <details>
++    <summary><i>Sample result:</i></summary>
++
++    ```json
++    {
++        "result": {
++            "found_notes": 42,
++            "new": 40,
++            "updated": 2,
++            "duplicate": 0,
++            "conflicting": 0,
++            "deck_count_after": 5
++        },
++        "error": null
++    }
++    ```
+     </details>
+ 
+ #### `reloadCollection`
+--- a/tests/test_misc.py
++++ b/tests/test_misc.py
+@@ -101,3 +101,35 @@
+             assert "test_deck" not in ac.deckNames()
+             ac.importPackage(path=filename)
+             assert "test_deck" in ac.deckNames()
++
++    def test_importPackageWithLog(self, session_with_profile_loaded):
++        # Anki 23.10+ only; skip if running against an older Anki where the
++        # modern collection API isn't available.
++        if not hasattr(aqt.mw.col, 'import_anki_package'):
++            pytest.skip("requires Anki 23.10+ (col.import_anki_package)")
++
++        filename = session_with_profile_loaded.base + "/export.apkg"
++
++        with current_decks_and_models_etc_preserved():
++            set_up_test_deck_and_test_model_and_two_notes()
++            ac.exportPackage(deck="test_deck", path=filename)
++
++        with current_decks_and_models_etc_preserved():
++            assert "test_deck" not in ac.deckNames()
++            result = ac.importPackageWithLog(path=filename)
++            assert "test_deck" in ac.deckNames()
++            # Two notes were exported; the log should reflect that.
++            assert result["found_notes"] == 2
++            assert result["new"] == 2
++            assert result["updated"] == 0
++            assert result["deck_count_after"] >= 1
++
++    def test_importPackageWithLog_rejects_bad_update_condition(self, session_with_profile_loaded):
++        if not hasattr(aqt.mw.col, 'import_anki_package'):
++            pytest.skip("requires Anki 23.10+ (col.import_anki_package)")
++        filename = session_with_profile_loaded.base + "/export.apkg"
++        with current_decks_and_models_etc_preserved():
++            set_up_test_deck_and_test_model_and_two_notes()
++            ac.exportPackage(deck="test_deck", path=filename)
++        with pytest.raises(Exception, match="updateNotes must be one of"):
++            ac.importPackageWithLog(path=filename, updateNotes="BOGUS")
