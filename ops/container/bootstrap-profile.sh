@@ -16,19 +16,33 @@
 # Decks" checked, and pass the resulting .apkg here.
 #
 # What it does:
-#   1. Stops the kryshanti-anki systemd unit.
-#   2. Flips KRYSHANTI_ANKI_DEFAULT_PROFILE in /var/lib/kryshanti-anki/anki.env
-#      to the new profile name so the next container start creates and loads it.
-#   3. Starts the unit; waits for AnkiConnect to come up.
-#   4. Copies the .apkg into a bind-mount-accessible temp dir
+#   1. Stops the persistent kryshanti-anki systemd unit.
+#   2. Launches a TRANSIENT bootstrap container against the same data volume,
+#      with KRYSHANTI_ANKI_DEFAULT_PROFILE=<target> set as a docker-run env
+#      override. This loads the target profile WITHOUT modifying anki.env's
+#      persisted default — `docker run -e VAR=value` wins over `--env-file`'s
+#      value of the same key for that container instance only.
+#   3. Waits for AnkiConnect; verifies the target profile is loaded.
+#   4. Copies the .apkg into the bind-mount-accessible temp dir
 #      (/var/lib/kryshanti-anki/data/_import/) and calls AnkiConnect's
 #      importPackageWithLog action (added by patches/0003-fix-importPackage-anki25.patch).
-#   5. Verifies the import landed (deckNames returns a non-trivial list).
+#   5. Verifies the import landed via the rich log's deck_count_after.
 #   6. Removes the temp .apkg.
 #   7. Optionally writes ANKIWEB_USERNAME_<profile> / ANKIWEB_PASSWORD_<profile>
-#      into anki.env (prompts for password or reads from --ankiweb-pass-file).
-#   8. Restarts the unit so SeedLogin picks up the new credentials on next
-#      profile load.
+#      into anki.env. These are scoped credential vars, distinct from the
+#      default-profile var — adding them does NOT change which profile loads
+#      by default; it just gives SeedLogin the per-profile creds to use when
+#      the target profile is subsequently loaded.
+#   8. Stops the transient bootstrap container.
+#   9. Starts the persistent kryshanti-anki systemd unit (which uses anki.env's
+#      UNCHANGED KRYSHANTI_ANKI_DEFAULT_PROFILE — i.e. whatever was the default
+#      before this script ran).
+#
+# Steady-state property: after the script exits (success OR failure),
+# anki.env's KRYSHANTI_ANKI_DEFAULT_PROFILE value is exactly what it was
+# before the script ran. The target profile is created and populated on disk
+# regardless. The persistent unit comes back up on its pre-bootstrap default
+# profile.
 #
 # The .apkg is NEVER stored in the repo. Always supplied at runtime.
 
@@ -42,7 +56,9 @@ ENV_FILE="$STATE_DIR/anki.env"
 IMPORT_DIR="$DATA_DIR/_import"
 UNIT_NAME="kryshanti-anki.service"
 ANKICONNECT_URL="http://127.0.0.1:8765"
-ANKICONNECT_WAIT_MAX=60   # seconds
+ANKICONNECT_WAIT_MAX=60                          # seconds
+IMAGE_TAG="kryshanti-anki:25.02.7"
+BOOTSTRAP_CONTAINER_NAME="kryshanti-anki-bootstrap"
 
 # --- arg parsing ---------------------------------------------------------- #
 
@@ -215,33 +231,49 @@ echo "=== bootstrap-profile.sh ==="
 echo "  profile:      $PROFILE"
 echo "  import:       $IMPORT_PATH"
 echo "  ankiweb user: ${ANKIWEB_USER:-<skipped>}"
+echo "  pre-bootstrap default profile: $(grep -E '^KRYSHANTI_ANKI_DEFAULT_PROFILE=' "$ENV_FILE" 2>/dev/null | sed -E 's/^KRYSHANTI_ANKI_DEFAULT_PROFILE=//' || echo '<unset>')"
 echo
 
-# --- 1. stop unit --------------------------------------------------------- #
+# Trap: if the script fails mid-flight, ensure the transient container is
+# stopped (it's --rm so removal is automatic on stop) and the persistent
+# unit is brought back up. anki.env is never modified by this script
+# regardless of exit path.
+SCRIPT_SUCCESS=0
+on_exit() {
+  local rc=$?
+  if [[ $SCRIPT_SUCCESS -eq 1 ]]; then
+    return 0
+  fi
+  echo "" >&2
+  echo "FAILURE (exit $rc): cleaning up transient bootstrap container + restoring persistent unit." >&2
+  docker stop "$BOOTSTRAP_CONTAINER_NAME" 2>/dev/null || true
+  systemctl start "$UNIT_NAME" 2>/dev/null || true
+}
+trap on_exit EXIT
 
-echo "[1/7] Stopping $UNIT_NAME (if running)..."
+# --- 1. stop the persistent kryshanti-anki unit -------------------------- #
+
+echo "[1/9] Stopping $UNIT_NAME (releases port 8765 + data lock)..."
 systemctl stop "$UNIT_NAME" 2>/dev/null || true
 
-# --- 2. flip default profile in anki.env --------------------------------- #
+# --- 2. launch transient bootstrap container with env override ----------- #
 
-echo "[2/7] Setting KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE in $ENV_FILE..."
-if [[ ! -f "$ENV_FILE" ]]; then
-  install -m 600 /dev/null "$ENV_FILE"
-fi
+echo "[2/9] Launching transient '$BOOTSTRAP_CONTAINER_NAME' with"
+echo "      KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE (docker-run -e overrides --env-file)..."
+# docker run's -e wins over --env-file for the same key. anki.env is read for
+# everything else (AnkiWeb creds, etc.); KRYSHANTI_ANKI_DEFAULT_PROFILE is
+# overridden just for this container's lifetime. anki.env on disk is unchanged.
+docker run --rm -d \
+    --name "$BOOTSTRAP_CONTAINER_NAME" \
+    --env-file "$ENV_FILE" \
+    -e "KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE" \
+    -p 127.0.0.1:8765:8765 \
+    -v "$DATA_DIR:/data" \
+    "$IMAGE_TAG" >/dev/null
 
-# Idempotent set: replace existing line or append.
-if grep -q "^KRYSHANTI_ANKI_DEFAULT_PROFILE=" "$ENV_FILE"; then
-  sed -i -E "s|^KRYSHANTI_ANKI_DEFAULT_PROFILE=.*|KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE|" "$ENV_FILE"
-else
-  echo "KRYSHANTI_ANKI_DEFAULT_PROFILE=$PROFILE" >> "$ENV_FILE"
-fi
+# --- 3. wait + verify the target profile is loaded ----------------------- #
 
-# --- 3. start unit + wait for AnkiConnect --------------------------------- #
-
-echo "[3/7] Starting $UNIT_NAME..."
-systemctl start "$UNIT_NAME"
-
-echo "      Waiting up to ${ANKICONNECT_WAIT_MAX}s for AnkiConnect on $ANKICONNECT_URL..."
+echo "[3/9] Waiting up to ${ANKICONNECT_WAIT_MAX}s for AnkiConnect..."
 deadline=$(( $(date +%s) + ANKICONNECT_WAIT_MAX ))
 while (( $(date +%s) < deadline )); do
   if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
@@ -250,10 +282,9 @@ while (( $(date +%s) < deadline )); do
   fi
   sleep 1
 done
-
 if ! curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
       -d '{"action":"version","version":6}' 2>/dev/null; then
-  echo "      AnkiConnect didn't come up. Check 'journalctl -u $UNIT_NAME'." >&2
+  echo "      AnkiConnect didn't come up. docker logs $BOOTSTRAP_CONTAINER_NAME for details." >&2
   exit 1
 fi
 
@@ -269,7 +300,7 @@ echo "      AnkiConnect up, profile=$ACTIVE."
 
 # --- 4. copy apkg into bind mount + importPackageWithLog ------------------ #
 
-echo "[4/7] Importing $IMPORT_PATH..."
+echo "[4/9] Importing $IMPORT_PATH..."
 mkdir -p "$IMPORT_DIR"
 IMPORT_NAME="$(basename "$IMPORT_PATH")"
 IMPORT_DST="$IMPORT_DIR/$IMPORT_NAME"
@@ -304,7 +335,7 @@ echo "      Import log: $IMPORT_RESULT"
 
 # --- 5. verify decks loaded ----------------------------------------------- #
 
-echo "[5/7] Verifying decks loaded..."
+echo "[5/9] Verifying decks loaded..."
 # importPackageWithLog returns deck_count_after in its log; use it directly
 # instead of a second deckNames call.
 DECKS=$(echo "$IMPORT_RESULT" \
@@ -320,14 +351,18 @@ echo "      $DECKS decks present."
 
 # --- 6. clean up temp apkg ----------------------------------------------- #
 
-echo "[6/7] Removing temp $COLPKG_DST..."
-rm -f "$COLPKG_DST"
+echo "[6/9] Removing temp $IMPORT_DST..."
+rm -f "$IMPORT_DST"
 rmdir "$IMPORT_DIR" 2>/dev/null || true
 
-# --- 7. credentials + restart -------------------------------------------- #
+# --- 7. write per-profile AnkiWeb credentials (optional) ----------------- #
+# These are scoped vars (ANKIWEB_USERNAME_<profile> / _PASSWORD_<profile>),
+# distinct from KRYSHANTI_ANKI_DEFAULT_PROFILE. Writing them does NOT change
+# which profile loads by default; SeedLogin reads them when the target
+# profile is subsequently loaded.
 
 if [[ $SKIP_CREDS -ne 1 && -n "$ANKIWEB_USER" ]]; then
-  echo "[7/7] Writing per-profile AnkiWeb credentials to $ENV_FILE..."
+  echo "[7/9] Writing per-profile AnkiWeb credentials to $ENV_FILE..."
   USER_KEY="ANKIWEB_USERNAME_$PROFILE"
   PASS_KEY="ANKIWEB_PASSWORD_$PROFILE"
 
@@ -359,19 +394,39 @@ with open(path, "w", encoding="utf-8") as fh:
     fh.writelines(lines)
 PY
   unset ANKIWEB_PASS
-
-  echo "      Restarting $UNIT_NAME so SeedLogin can register the new account..."
-  systemctl restart "$UNIT_NAME"
-  # Wait for AnkiConnect to come back.
-  deadline=$(( $(date +%s) + ANKICONNECT_WAIT_MAX ))
-  while (( $(date +%s) < deadline )); do
-    if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
-          -d '{"action":"version","version":6}' 2>/dev/null; then
-      break
-    fi
-    sleep 1
-  done
+else
+  echo "[7/9] Credentials skipped (no --ankiweb-user given or --skip-credentials set)."
 fi
+
+# --- 8. stop the transient bootstrap container --------------------------- #
+
+echo "[8/9] Stopping transient '$BOOTSTRAP_CONTAINER_NAME'..."
+docker stop "$BOOTSTRAP_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+# --- 9. start the persistent unit on its UNCHANGED default profile ------- #
+
+echo "[9/9] Starting $UNIT_NAME (uses anki.env's pre-bootstrap default profile)..."
+systemctl start "$UNIT_NAME"
+deadline=$(( $(date +%s) + ANKICONNECT_WAIT_MAX ))
+while (( $(date +%s) < deadline )); do
+  if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
+        -d '{"action":"version","version":6}' 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+if curl -fsS -o /dev/null --max-time 2 -X POST "$ANKICONNECT_URL" \
+      -d '{"action":"version","version":6}' 2>/dev/null; then
+  ACTIVE_AFTER=$(curl -fsS -X POST "$ANKICONNECT_URL" \
+                    -d '{"action":"getActiveProfile","version":6}' \
+                 | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"] or "")')
+  echo "      Persistent unit back up; active profile=${ACTIVE_AFTER:-<unknown>}."
+else
+  echo "      Warning: AnkiConnect didn't come back within ${ANKICONNECT_WAIT_MAX}s after persistent-unit start." >&2
+  echo "      Bootstrap completed but the unit may need manual investigation." >&2
+fi
+
+SCRIPT_SUCCESS=1
 
 # --- done ---------------------------------------------------------------- #
 
