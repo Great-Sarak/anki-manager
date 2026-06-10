@@ -17,10 +17,9 @@ from pathlib import Path
 import pytest
 
 
-def _load_resolver():
+def _load_module():
     # Stub aqt + aqt.gui_hooks + aqt.qt so the addon's module-scope imports
-    # succeed without a real Anki install. We only care about
-    # _resolve_credentials.
+    # succeed without a real Anki install.
     aqt_stub = types.ModuleType("aqt")
     aqt_stub.mw = None
     gui_hooks_stub = types.ModuleType("aqt.gui_hooks")
@@ -42,7 +41,11 @@ def _load_resolver():
     spec = importlib.util.spec_from_file_location("seedlogin_test_load", src)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod._resolve_credentials
+    return mod
+
+
+def _load_resolver():
+    return _load_module()._resolve_credentials
 
 
 @pytest.fixture
@@ -108,3 +111,43 @@ def test_missing_returns_none(resolve):
     assert user is None
     assert pwd is None
     assert source == "missing"
+
+
+# --- _current_profile_name (regression for the silent <unknown> bug) -------
+#
+# aqt.profiles.ProfileManager.name is a plain str attribute in every Anki
+# version (legacy ankiqt through 25.x); there is no name() method. The old
+# `callable(getattr(pm, "name", None))` guard always evaluated False, so the
+# profile name fell through to "<unknown>", the scoped credential lookup
+# missed, and every login dropped to the legacy unscoped account.
+
+
+class _FakePM:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_profile_name_reads_str_attribute():
+    assert _load_module()._current_profile_name(_FakePM("sorotassu")) == "sorotassu"
+
+
+def test_profile_name_underscore_prefix():
+    pm = _FakePM("_anki_skill_testrun")
+    assert _load_module()._current_profile_name(pm) == "_anki_skill_testrun"
+
+
+def test_profile_name_is_not_treated_as_callable():
+    # A str has no __call__; the resolver must never try to invoke it.
+    name = _load_module()._current_profile_name(_FakePM("sorotassu"))
+    assert name == "sorotassu"  # not "<unknown>", not a TypeError
+
+
+def test_profile_name_absent_attribute_falls_back():
+    class _NoName:
+        pass
+
+    assert _load_module()._current_profile_name(_NoName()) == "<unknown>"
+
+
+def test_profile_name_none_falls_back():
+    assert _load_module()._current_profile_name(_FakePM(None)) == "<unknown>"

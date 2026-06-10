@@ -54,6 +54,22 @@ def _resolve_credentials(profile_name: str, trigger: str) -> tuple[str | None, s
     return None, None, "missing"
 
 
+def _current_profile_name(pm) -> str:
+    """Return the active profile's name, or ``"<unknown>"`` if unavailable.
+
+    ``aqt.profiles.ProfileManager.name`` is a plain ``str`` instance attribute
+    in every Anki version (legacy ankiqt through 25.x) — it is assigned in
+    ``__init__``/``load``/``rename`` and read directly; there has never been a
+    ``name()`` method. The earlier ``callable(getattr(pm, "name", None))``
+    guard therefore *always* evaluated False, so the name silently fell
+    through to ``"<unknown>"`` — which broke the scoped credential lookup in
+    ``_resolve_credentials`` and dropped every login to the legacy unscoped
+    fallback account. Read the attribute directly; the ``getattr`` default
+    guards only the theoretical case of the attribute being absent entirely.
+    """
+    return getattr(pm, "name", None) or "<unknown>"
+
+
 def _seed_login(trigger: str) -> None:
     if _DONE["v"]:
         return
@@ -66,7 +82,7 @@ def _seed_login(trigger: str) -> None:
             _log(f"seedlogin[{trigger}]: syncKey already set; no-op")
             _DONE["v"] = True
             return
-        profile_name = mw.pm.name() if callable(getattr(mw.pm, "name", None)) else "<unknown>"
+        profile_name = _current_profile_name(mw.pm)
         username, password, source = _resolve_credentials(profile_name, trigger)
         if not username or not password:
             _log(
