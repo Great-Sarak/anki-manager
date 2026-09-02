@@ -19,6 +19,12 @@ def _write(tmp_path: Path, content: str) -> Path:
     return p
 
 
+def test_default_path_uses_replace_safe_shared_directory():
+    assert DEFAULT_ALLOWLIST_PATH == Path(
+        "/var/lib/kryshanti-anki/shared/allowlist.toml"
+    )
+
+
 class TestLoad:
     def test_simple_file(self, tmp_path):
         p = _write(tmp_path, """

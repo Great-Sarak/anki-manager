@@ -96,7 +96,10 @@ class TestReadiness:
                 stderr="D-Bus unavailable", returncode=1
             ),
         })
-        with pytest.raises(NotReadyError, match=r"sub_state=<unavailable: .*D-Bus unavailable"):
+        with pytest.raises(
+            NotReadyError,
+            match=r"sub_state=<unavailable: .*D-Bus unavailable",
+        ):
             Lifecycle(UNIT, fake_client, ready_timeout=0.0, runner=runner).wait_ready()
 
 
@@ -135,9 +138,9 @@ class OneShotBroker:
         self._tempdir = tempfile.TemporaryDirectory()
         self.path = Path(self._tempdir.name) / "lifecycle.sock"
         self.request: dict | None = None
-        self._response = (
-            response if isinstance(response, bytes) else json.dumps(response).encode() + b"\n"
-        )
+        self._response = response
+        if not isinstance(response, bytes):
+            self._response = json.dumps(response).encode() + b"\n"
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server.bind(str(self.path))
         self._server.listen(1)

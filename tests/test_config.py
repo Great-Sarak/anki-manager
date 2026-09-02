@@ -11,3 +11,8 @@ def test_lifecycle_socket_is_unset_by_default(monkeypatch):
 def test_lifecycle_socket_comes_from_environment(monkeypatch):
     monkeypatch.setenv("ANKI_MANAGER_LIFECYCLE_SOCKET", "/run/test/lifecycle.sock")
     assert Config().lifecycle_socket == Path("/run/test/lifecycle.sock")
+
+
+def test_writer_lock_uses_replace_safe_shared_directory(monkeypatch):
+    monkeypatch.delenv("ANKI_MANAGER_LIFECYCLE_SOCKET", raising=False)
+    assert Config().lock_path == Path("/var/lib/kryshanti-anki/shared/writer.lock")
