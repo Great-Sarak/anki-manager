@@ -10,7 +10,7 @@ import pytest
 from anki_rpc import AnkiConnectError
 
 from anki_manager.errors import LifecycleError, NotReadyError
-from anki_manager.lifecycle import BrokerBackend, Lifecycle
+from anki_manager.lifecycle import MAX_BROKER_RESPONSE_BYTES, BrokerBackend, Lifecycle
 from conftest import cp, make_runner
 
 
@@ -45,6 +45,13 @@ class TestSystemctlOps:
     def test_is_active_false(self, fake_client):
         runner = make_runner({("is-active", UNIT): cp(stdout="inactive\n", returncode=3)})
         assert Lifecycle(UNIT, fake_client, runner=runner).is_active() is False
+
+    def test_is_active_raises_on_unexpected_failure(self, fake_client):
+        runner = make_runner({
+            ("is-active", UNIT): cp(stderr="D-Bus unavailable", returncode=1),
+        })
+        with pytest.raises(LifecycleError, match="D-Bus unavailable"):
+            Lifecycle(UNIT, fake_client, runner=runner).is_active()
 
     def test_sub_state(self, fake_client):
         runner = make_runner({
@@ -82,6 +89,16 @@ class TestReadiness:
         with pytest.raises(NotReadyError, match="dead"):
             Lifecycle(UNIT, fake_client, ready_timeout=0.5, runner=runner).wait_ready()
 
+    def test_wait_ready_preserves_not_ready_when_sub_state_fails(self, fake_client):
+        fake_client.deck_names.side_effect = OSError("nope")
+        runner = make_runner({
+            ("show", UNIT, "--property=SubState", "--value"): cp(
+                stderr="D-Bus unavailable", returncode=1
+            ),
+        })
+        with pytest.raises(NotReadyError, match=r"sub_state=<unavailable: .*D-Bus unavailable"):
+            Lifecycle(UNIT, fake_client, ready_timeout=0.0, runner=runner).wait_ready()
+
 
 class TestEnsureRunning:
     def test_skips_start_when_already_active(self, fake_client):
@@ -114,11 +131,13 @@ class TestStatus:
 
 
 class OneShotBroker:
-    def __init__(self, response: dict):
+    def __init__(self, response: dict | bytes):
         self._tempdir = tempfile.TemporaryDirectory()
         self.path = Path(self._tempdir.name) / "lifecycle.sock"
         self.request: dict | None = None
-        self._response = json.dumps(response).encode() + b"\n"
+        self._response = (
+            response if isinstance(response, bytes) else json.dumps(response).encode() + b"\n"
+        )
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server.bind(str(self.path))
         self._server.listen(1)
@@ -176,3 +195,19 @@ class TestBrokerBackend:
         backend = BrokerBackend(UNIT, path, timeout=0.1)
         with pytest.raises(LifecycleError, match=str(path)):
             backend.start()
+
+    def test_response_ignores_bytes_after_first_newline(self):
+        response = b'{"ok":true,"result":{}}\nignored'
+        with OneShotBroker(response) as broker:
+            BrokerBackend(UNIT, broker.path).start()
+
+    def test_oversized_response_fails_closed(self):
+        response = b"x" * (MAX_BROKER_RESPONSE_BYTES + 1)
+        with OneShotBroker(response) as broker:
+            with pytest.raises(LifecycleError, match="response exceeds limit"):
+                BrokerBackend(UNIT, broker.path).start()
+
+    def test_conflicting_backend_selectors_are_rejected(self, fake_client, tmp_path):
+        runner = make_runner({})
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            Lifecycle(UNIT, fake_client, runner=runner, broker_socket=tmp_path / "x")

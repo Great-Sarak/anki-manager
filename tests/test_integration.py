@@ -170,7 +170,7 @@ def test_writer_lock_present_and_usable(mgr: AnkiManager):
     from pathlib import Path
     from anki_manager import file_lock
 
-    lock_path = Path("/var/lib/kryshanti-anki/writer.lock")
+    lock_path = Path("/var/lib/kryshanti-anki/shared/writer.lock")
     assert lock_path.exists(), "writer.lock not installed by host-setup.sh"
     with file_lock(lock_path, timeout=2.0):
         pass

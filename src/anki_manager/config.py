@@ -24,7 +24,7 @@ class Config:
     ready_timeout: float = 60.0
     rpc_timeout: float = 60.0
     # Cross-process write lock — set lock_path=None to disable (tests).
-    lock_path: Path | None = Path("/var/lib/kryshanti-anki/writer.lock")
+    lock_path: Path | None = Path("/var/lib/kryshanti-anki/shared/writer.lock")
     lock_timeout: float = 30.0
     # Trigger Anki to create a backup once per AnkiManager instance, before
     # the first add/update/upsert. Retention is governed by Anki's own

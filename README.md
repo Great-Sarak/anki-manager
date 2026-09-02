@@ -101,7 +101,7 @@ Exit code is `0` on full success, `1` if any entry failed.
 ## Permissions (deck allowlist)
 
 Writes are gated by a system-wide TOML allowlist at
-`/var/lib/kryshanti-anki/allowlist.toml`, installed (with a sensible
+`/var/lib/kryshanti-anki/shared/allowlist.toml`, installed (with a sensible
 starter) by `host-setup.sh`. Each agent has a section claiming a set
 of Linux usernames as aliases and listing patterns it may write to:
 
@@ -283,7 +283,7 @@ ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requir
 ## Concurrency (writer lock)
 
 All write paths (`add_note`, `update_note`, `upsert_note`) hold a
-cross-process `flock` on `/var/lib/kryshanti-anki/writer.lock` while
+cross-process `flock` on `/var/lib/kryshanti-anki/shared/writer.lock` while
 running their GUID-collision lookup + RPC write. This closes the
 TOCTOU race where two concurrent agents could both run `find_by_guid`,
 both see "no existing note", and both call `addNote` with the same

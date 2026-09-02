@@ -1,4 +1,8 @@
-"""Host systemd and narrow-broker lifecycle backends plus readiness wait."""
+"""Host systemd and narrow-broker lifecycle backends plus readiness wait.
+
+The backends manage only the container process. Long-lived Anki collection state
+remains in the host-owned ``/var/lib/kryshanti-anki`` tree.
+"""
 
 from __future__ import annotations
 
@@ -72,7 +76,11 @@ class SystemctlBackend:
 
     def is_active(self) -> bool:
         result = self._run("is-active", self._unit)
-        return result.stdout.strip() == "active"
+        if result.returncode == 0:
+            return result.stdout.strip() == "active"
+        if result.returncode == 3:
+            return False
+        self._raise_failure(result, "is-active", self._unit)
 
     def sub_state(self) -> str:
         args = ("show", self._unit, "--property=SubState", "--value")
@@ -174,9 +182,10 @@ class BrokerBackend:
             if b"\n" in chunk:
                 break
         response = b"".join(chunks)
-        if not response.endswith(b"\n"):
+        if b"\n" not in response:
             raise LifecycleError("lifecycle broker response is incomplete")
-        return response
+        line, _trailing = response.split(b"\n", 1)
+        return line
 
 
 class Lifecycle:
@@ -194,6 +203,9 @@ class Lifecycle:
         self._unit = unit_name
         self._client = client
         self._ready_timeout = ready_timeout
+        selectors = sum(value is not None for value in (backend, runner, broker_socket))
+        if selectors > 1:
+            raise ValueError("backend, runner, and broker_socket are mutually exclusive")
         if backend is not None:
             self._backend = backend
         elif runner is not None:
@@ -219,7 +231,11 @@ class Lifecycle:
         return self._backend.sub_state()
 
     def is_ready(self) -> bool:
-        """True if AnkiConnect responds and the collection is loaded."""
+        """Return whether AnkiConnect responds with a loaded collection.
+
+        The HTTP server may answer before Anki has opened the profile. ``deck_names``
+        is the cheapest end-to-end probe that confirms the collection is usable.
+        """
         try:
             self._client.deck_names()
             return True
@@ -233,9 +249,13 @@ class Lifecycle:
             if self.is_ready():
                 return
             time.sleep(0.5)
+        try:
+            observed = self.sub_state()
+        except LifecycleError as exc:
+            observed = f"<unavailable: {exc}>"
         raise NotReadyError(
             f"AnkiConnect not ready within {effective_timeout}s "
-            f"(unit={self._unit}, sub_state={self.sub_state()})"
+            f"(unit={self._unit}, sub_state={observed})"
         )
 
     def ensure_running(self) -> None:

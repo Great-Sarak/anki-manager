@@ -29,7 +29,7 @@ import tomllib
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-ALLOWLIST_PATH = Path("/var/lib/kryshanti-anki/allowlist.toml")
+ALLOWLIST_PATH = Path("/var/lib/kryshanti-anki/shared/allowlist.toml")
 NEW_SENTINEL = "<new>"
 UNIVERSAL = "universal"
 
