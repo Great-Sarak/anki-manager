@@ -3,7 +3,7 @@ class AnkiManagerError(Exception):
 
 
 class LifecycleError(AnkiManagerError):
-    """Raised when systemctl or the underlying container fails."""
+    """Raised when the lifecycle backend or underlying container fails."""
 
 
 class NotReadyError(AnkiManagerError):

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _lifecycle_socket_from_env() -> Path | None:
+    value = os.environ.get("ANKI_MANAGER_LIFECYCLE_SOCKET")
+    return Path(value) if value else None
 
 
 @dataclass(frozen=True)
 class Config:
     unit_name: str = "kryshanti-anki.service"
+    lifecycle_socket: Path | None = field(default_factory=_lifecycle_socket_from_env)
+    lifecycle_timeout: float = 30.0
     host: str = "127.0.0.1"
     port: int = 8765
     api_key: str | None = None

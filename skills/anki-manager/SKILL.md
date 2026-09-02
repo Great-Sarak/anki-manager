@@ -21,8 +21,14 @@ them safely.
 ## Runtime Requirements
 
 - `anki-manager` is on `PATH`.
-- The invoking identity can start `kryshanti-anki.service` through the installed
-  polkit rule, normally by membership in `kryshanti-anki-users`.
+- On the host, the invoking identity can start `kryshanti-anki.service`
+  through the installed polkit rule, normally by membership in
+  `kryshanti-anki-users`.
+- In the containerized gateway, `ANKI_MANAGER_LIFECYCLE_SOCKET` names the
+  mounted narrow lifecycle broker. The gateway deployment must also provide
+  its loopback AnkiConnect forwarder and the allowlist/writer-lock mounts.
+- Permission-mutation commands still require the host-only `pkexec` helper;
+  from the gateway, operate only within pre-granted deck permissions.
 - Writes are allowed by `/var/lib/kryshanti-anki/allowlist.toml`; missing or
   unmatched allowlist entries fail closed.
 - The currently active Anki profile is the collection being mutated. Profile
