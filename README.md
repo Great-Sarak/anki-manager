@@ -4,13 +4,20 @@ Lifecycle + domain manager for a headless Anki Desktop container. Layer 2 of the
 
 Wraps [`anki-rpc`](https://github.com/Great-Sarak/anki-rpc) (Layer 1) with:
 
-- **Container lifecycle.** Talks to systemd (`kryshanti-anki.service`) via `systemctl`; ensures the container is running and AnkiConnect is answering before any domain op.
+- **Container lifecycle.** Talks to systemd (`kryshanti-anki.service`) directly on the host, or through the narrow Unix-socket lifecycle broker when explicitly configured; ensures the container is running and AnkiConnect is answering before any domain op.
 - **Live schema validation.** Every `add_note` queries the model's field names from Anki and fails fast if the provided fields don't match — protects against silent corruption when the user renames a field in Anki Desktop.
 - **CLI.** `anki-manager start / stop / status / list-models / add-deck / add-note / sync / force-upload / force-download`.
 
 ## Host prerequisites
 
 The kryshanti-anki systemd unit must be installed (done once-off via the `host-setup.sh` script in [`ops/container/`](ops/container/README.md)). The invoking user must be in the `kryshanti-anki-users` group.
+
+Inside the containerized OpenClaw gateway, set
+`ANKI_MANAGER_LIFECYCLE_SOCKET` to the mounted broker socket. The gateway
+deployment also forwards its loopback `127.0.0.1:8765` to the host-owned
+AnkiConnect Unix socket, so the existing `host`/`port` defaults remain valid.
+If the configured lifecycle socket is absent or malformed, lifecycle calls
+fail closed with `LifecycleError`; they do not fall back to `systemctl`.
 
 ## Install
 
@@ -94,7 +101,7 @@ Exit code is `0` on full success, `1` if any entry failed.
 ## Permissions (deck allowlist)
 
 Writes are gated by a system-wide TOML allowlist at
-`/var/lib/kryshanti-anki/allowlist.toml`, installed (with a sensible
+`/var/lib/kryshanti-anki/shared/allowlist.toml`, installed (with a sensible
 starter) by `host-setup.sh`. Each agent has a section claiming a set
 of Linux usernames as aliases and listing patterns it may write to:
 
@@ -207,7 +214,7 @@ Everything in `anki_manager.__all__` is supported and follows semver. Anything n
 |---|---|
 | `AnkiManager` | the top-level facade — instantiate once per process |
 | `AddResult`, `UpsertResult` | typed return values for `add_note` / `upsert_note` |
-| `Config` | optional construction-time tuning (host, port, timeouts, lock path, auto_backup) |
+| `Config` | optional construction-time tuning (host, port, lifecycle socket/timeouts, lock path, auto_backup) |
 | `Status` | snapshot returned by `mgr.status()` |
 | `Lifecycle`, `Allowlist`, `AgentEntry` | injectable for testing |
 | `AnkiManagerError`, `InvalidNoteError`, `NoteExistsError`, `NoteNotFoundError`, `DeckNotAllowedError`, `AllowlistError`, `LifecycleError`, `NotReadyError`, `PermissionsHelperError`, `LockTimeoutError` | the exception hierarchy — all derive from `AnkiManagerError` (except `LockTimeoutError`, which is unrelated to domain errors) |
@@ -249,7 +256,7 @@ result = mgr.call("createModel", modelName="...", inOrderFields=[...], cardTempl
 ```
 ┌─────────────────────────────────────────────┐
 │  AnkiManager        (domain + lifecycle)    │
-│    Lifecycle  ─────► systemctl              │
+│    Lifecycle  ─────► systemctl or broker    │
 │    Client     ─────► AnkiConnect HTTP       │
 └─────────────────────────────────────────────┘
          │
@@ -276,7 +283,7 @@ ANKI_MANAGER_INTEGRATION=1 pytest tests/test_integration.py    # 5 tests, requir
 ## Concurrency (writer lock)
 
 All write paths (`add_note`, `update_note`, `upsert_note`) hold a
-cross-process `flock` on `/var/lib/kryshanti-anki/writer.lock` while
+cross-process `flock` on `/var/lib/kryshanti-anki/shared/writer.lock` while
 running their GUID-collision lookup + RPC write. This closes the
 TOCTOU race where two concurrent agents could both run `find_by_guid`,
 both see "no existing note", and both call `addNote` with the same

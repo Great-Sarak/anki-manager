@@ -7,9 +7,9 @@
 # What it does:
 #   1. Creates system user  liora-mosspelt  (in docker group, no login).
 #   2. Creates group        kryshanti-anki-users  and adds the invoking user to it.
-#   3. Creates state dir    /var/lib/kryshanti-anki/{data,}  and migrates any
+#   3. Creates state dirs   /var/lib/kryshanti-anki/{data,shared} and migrates any
 #                           seed data/ + .env adjacent to this script into it.
-#                           Also creates writer.lock (group-rw to
+#                           Also creates shared/writer.lock (group-rw to
 #                           kryshanti-anki-users) for the cross-process write
 #                           lock.
 #   4. Builds image         kryshanti-anki:25.02.7  from this directory.
@@ -25,7 +25,7 @@
 #                           letting kryshanti-anki-users invoke grant-deck
 #                           via pkexec without a password (helper still
 #                           validates the request server-side).
-#   9. Installs starter     /var/lib/kryshanti-anki/allowlist.toml
+#   9. Installs starter     /var/lib/kryshanti-anki/shared/allowlist.toml
 #                           with a Myrzka section claiming the invoking user
 #                           and the <new> capability — only if not present.
 #  10. Symlinks /usr/local/bin/anki-manager -> the discovered anki-manager
@@ -49,6 +49,7 @@ ANKI_USER="liora-mosspelt"
 ACCESS_GROUP="kryshanti-anki-users"
 STATE_DIR="/var/lib/kryshanti-anki"
 DATA_DIR="$STATE_DIR/data"
+SHARED_DIR="$STATE_DIR/shared"
 ENV_FILE="$STATE_DIR/anki.env"
 IMAGE_TAG="kryshanti-anki:25.02.7"
 CONTAINER_NAME="kryshanti-anki"
@@ -56,8 +57,10 @@ UNIT_NAME="kryshanti-anki.service"
 POLKIT_RULE="/etc/polkit-1/rules.d/50-kryshanti-anki.rules"
 POLKIT_RULE_GRANT="/etc/polkit-1/rules.d/51-kryshanti-anki-grant.rules"
 
-ALLOWLIST_FILE="$STATE_DIR/allowlist.toml"
-LOCK_FILE="$STATE_DIR/writer.lock"
+ALLOWLIST_FILE="$SHARED_DIR/allowlist.toml"
+LOCK_FILE="$SHARED_DIR/writer.lock"
+LEGACY_ALLOWLIST_FILE="$STATE_DIR/allowlist.toml"
+LEGACY_LOCK_FILE="$STATE_DIR/writer.lock"
 HELPER_DIR="/usr/local/libexec/kryshanti-anki"
 HELPER_PATH="$HELPER_DIR/grant-deck"
 
@@ -123,6 +126,7 @@ fi
 
 echo "[3/10] Setting up state dir $STATE_DIR..."
 mkdir -p "$DATA_DIR"
+install -d -m 0750 -o root -g "$ACCESS_GROUP" "$SHARED_DIR"
 
 if [[ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" && -d "$SEED_DATA" ]]; then
   echo "      Migrating $SEED_DATA -> $DATA_DIR..."
@@ -156,7 +160,23 @@ else
   echo "        sudo chmod 600 $ENV_FILE; sudo chown $ANKI_USER:$ANKI_USER $ENV_FILE"
 fi
 
-chown -R "$ANKI_USER:$ANKI_USER" "$STATE_DIR"
+chown "$ANKI_USER:$ANKI_USER" "$STATE_DIR"
+chown -R "$ANKI_USER:$ANKI_USER" "$DATA_DIR"
+if [[ -f "$ENV_FILE" ]]; then
+  chown "$ANKI_USER:$ANKI_USER" "$ENV_FILE"
+fi
+
+# Move the legacy single-file state into the directory mounted by the gateway.
+# Directory bind mounts follow grant-deck's atomic os.replace() updates; mounting
+# allowlist.toml itself would pin the old inode until the container is recreated.
+if [[ -f "$LEGACY_ALLOWLIST_FILE" && ! -e "$ALLOWLIST_FILE" ]]; then
+  echo "      Migrating $LEGACY_ALLOWLIST_FILE -> $ALLOWLIST_FILE..."
+  mv "$LEGACY_ALLOWLIST_FILE" "$ALLOWLIST_FILE"
+fi
+if [[ -f "$LEGACY_LOCK_FILE" && ! -e "$LOCK_FILE" ]]; then
+  echo "      Migrating $LEGACY_LOCK_FILE -> $LOCK_FILE..."
+  mv "$LEGACY_LOCK_FILE" "$LOCK_FILE"
+fi
 
 # Cross-process writer lock — group-rw to kryshanti-anki-users so all
 # agents that can talk to AnkiConnect can also serialise writes.
@@ -282,6 +302,8 @@ EOF
   chown root:"$ACCESS_GROUP" "$ALLOWLIST_FILE"
   chmod 0640 "$ALLOWLIST_FILE"   # root-writable, group-readable, others-no-access
 fi
+chown root:"$ACCESS_GROUP" "$ALLOWLIST_FILE"
+chmod 0640 "$ALLOWLIST_FILE"
 
 # --- 10. anki-manager CLI symlink ----------------------------------------- #
 

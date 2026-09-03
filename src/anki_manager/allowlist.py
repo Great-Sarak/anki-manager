@@ -1,4 +1,4 @@
-"""Deck allowlist — parses /var/lib/kryshanti-anki/allowlist.toml, resolves
+"""Deck allowlist — parses /var/lib/kryshanti-anki/shared/allowlist.toml, resolves
 agent identity, and decides whether a deck name is writable by an agent.
 
 The file shape:
@@ -56,7 +56,7 @@ from pathlib import Path
 from .errors import AnkiManagerError
 
 NEW_SENTINEL = "<new>"
-DEFAULT_ALLOWLIST_PATH = Path("/var/lib/kryshanti-anki/allowlist.toml")
+DEFAULT_ALLOWLIST_PATH = Path("/var/lib/kryshanti-anki/shared/allowlist.toml")
 
 
 class AllowlistError(AnkiManagerError):

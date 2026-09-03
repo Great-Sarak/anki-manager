@@ -148,7 +148,7 @@ curl -s -X POST http://127.0.0.1:8765 \
   installed by `host-setup.sh` to
   `/usr/local/libexec/kryshanti-anki/grant-deck`. Runs as root;
   validates pattern syntax, invoker identity, and section authority
-  before atomically rewriting `/var/lib/kryshanti-anki/allowlist.toml`.
+  before atomically rewriting `/var/lib/kryshanti-anki/shared/allowlist.toml`.
   Tested via `test_grant_deck.py` (15 unit tests).
 - `test_grant_deck.py` — unit tests for the helper, runnable in any
   Python 3.12 env with pytest installed.

@@ -67,6 +67,8 @@ class AnkiManager:
             unit_name=self._config.unit_name,
             client=self._rpc,
             ready_timeout=self._config.ready_timeout,
+            broker_socket=self._config.lifecycle_socket,
+            broker_timeout=self._config.lifecycle_timeout,
         )
         # Load allowlist lazily so callers can stub it for testing.
         self._allowlist: Allowlist | None = allowlist
